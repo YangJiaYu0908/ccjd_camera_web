@@ -11,7 +11,7 @@ services:
   # mysql数据库
   mysql-ccjd:
     image: library/mysql:8.0.30
-    restart: :always
+    restart: always
     command: [
       '--character-set-server=utf8mb4',
       '--collation-server=utf8mb4_unicode_ci'
