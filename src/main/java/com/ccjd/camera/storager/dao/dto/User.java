@@ -7,7 +7,6 @@ public class User {
     private String password;
     private String createTime;
     private String updateTime;
-    private String pushKey;
     private Role role;
 
     public int getId() {
@@ -56,13 +55,5 @@ public class User {
 
     public void setRole(Role role) {
         this.role = role;
-    }
-
-    public String getPushKey() {
-        return pushKey;
-    }
-
-    public void setPushKey(String pushKey) {
-        this.pushKey = pushKey;
     }
 }

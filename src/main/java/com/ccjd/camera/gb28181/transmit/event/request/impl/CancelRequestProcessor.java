@@ -15,7 +15,7 @@ import javax.sip.RequestEvent;
 @Component
 public class CancelRequestProcessor extends SIPRequestProcessorParent implements InitializingBean, ISIPRequestProcessor {
 
-	private final String method = "CANCEL";
+	private String method = "CANCEL";
 
 	@Autowired
 	private SIPProcessorObserver sipProcessorObserver;

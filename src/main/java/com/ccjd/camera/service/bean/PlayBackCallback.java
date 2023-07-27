@@ -1,7 +1,9 @@
 package com.ccjd.camera.service.bean;
 
-public interface PlayBackCallback<T> {
+import com.ccjd.camera.gb28181.transmit.callback.RequestMessage;
 
-    void call(PlayBackResult<T> msg);
+public interface PlayBackCallback {
+
+    void call(PlayBackResult<RequestMessage> msg);
 
 }

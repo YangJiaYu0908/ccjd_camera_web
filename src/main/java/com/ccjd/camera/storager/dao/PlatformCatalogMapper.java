@@ -1,6 +1,5 @@
 package com.ccjd.camera.storager.dao;
 
-import com.ccjd.camera.gb28181.bean.DeviceChannel;
 import com.ccjd.camera.gb28181.bean.PlatformCatalog;
 import org.apache.ibatis.annotations.*;
 import org.springframework.stereotype.Repository;
@@ -12,42 +11,34 @@ import java.util.List;
 @Repository
 public interface PlatformCatalogMapper {
 
-    @Insert("INSERT INTO wvp_platform_catalog (id, name, platform_id, parent_id, civil_code, business_group_id) VALUES" +
-            "(#{id}, #{name}, #{platformId}, #{parentId}, #{civilCode}, #{businessGroupId})")
+    @Insert("INSERT INTO platform_catalog (id, name, platformId, parentId) VALUES" +
+            "(#{id}, #{name}, #{platformId}, #{parentId})")
     int add(PlatformCatalog platformCatalog);
 
-    @Delete("DELETE from wvp_platform_catalog WHERE platform_id=#{platformId} and id=#{id}")
-    int del(String platformId, String id);
+    @Delete("DELETE FROM platform_catalog WHERE id=#{id}")
+    int del(String id);
 
-    @Delete("DELETE from wvp_platform_catalog WHERE platform_id=#{platformId}")
+    @Delete("DELETE FROM platform_catalog WHERE platformId=#{platformId}")
     int delByPlatformId(String platformId);
 
-    @Select("SELECT pc.*, count(pc2.id) as children_count from wvp_platform_catalog pc " +
-            "left join wvp_platform_catalog pc2 on pc.id = pc2.parent_id " +
-            "WHERE pc.parent_id=#{parentId} AND pc.platform_id=#{platformId} " +
-            "group by pc.id, pc.name, pc.platform_id, pc.business_group_id, pc.civil_code, pc.parent_id")
+    @Select("SELECT pc.*, count(pc2.id) as childrenCount FROM platform_catalog pc " +
+            "left join platform_catalog pc2 on pc.id = pc2.parentId " +
+            "WHERE pc.parentId=#{parentId} AND pc.platformId=#{platformId} group by pc.id")
     List<PlatformCatalog> selectByParentId(String platformId, String parentId);
 
+    @Select("SELECT *, (SELECT COUNT(1) from platform_catalog where parentId = pc.id) as childrenCount  FROM platform_catalog pc WHERE pc.id=#{id}")
+    PlatformCatalog select(String id);
+
     @Update(value = {" <script>" +
-            "UPDATE wvp_platform_catalog " +
+            "UPDATE platform_catalog " +
             "SET name=#{name}" +
-            "WHERE id=#{id} and platform_id=#{platformId}"+
+            "WHERE id=#{id}"+
             "</script>"})
     int update(PlatformCatalog platformCatalog);
 
-    @Select("SELECT *, (SELECT COUNT(1) from wvp_platform_catalog where parent_id = pc.id) as children_count  from wvp_platform_catalog pc WHERE pc.platform_id=#{platformId}")
+    @Select("SELECT *, (SELECT COUNT(1) from platform_catalog where parentId = pc.id) as childrenCount  FROM platform_catalog pc WHERE pc.platformId=#{platformId}")
     List<PlatformCatalog> selectByPlatForm(String platformId);
 
-    @Select("SELECT pc.* FROM  wvp_platform_catalog pc WHERE pc.id = (SELECT pp.catalog_id from wvp_platform pp WHERE pp.server_gb_id=#{platformId})")
+    @Select("SELECT pc.* FROM  platform_catalog pc WHERE  pc.id = (SELECT pp.catalogId from parent_platform pp WHERE pp.serverGBId=#{platformId})")
     PlatformCatalog selectDefaultByPlatFormId(String platformId);
-
-    @Select("SELECT pc.id as channel_id, pc.name, pc.civil_code, pc.business_group_id,'1' as parental, pc.parent_id  " +
-            " from wvp_platform_catalog pc WHERE pc.platform_id=#{platformId}")
-    List<DeviceChannel> queryCatalogInPlatform(String platformId);
-
-    @Select("SELECT *, " +
-            "(SELECT COUNT(1) from wvp_platform_catalog where parent_id = pc.id) as children_count " +
-            " from wvp_platform_catalog pc " +
-            " WHERE pc.id=#{id} and pc.platform_id=#{platformId}")
-    PlatformCatalog selectByPlatFormAndCatalogId(String platformId, String id);
 }

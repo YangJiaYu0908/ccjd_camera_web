@@ -1,41 +1,29 @@
 package com.ccjd.camera.gb28181.transmit.event.request.impl;
 
-import com.alibaba.fastjson2.JSON;
-import com.alibaba.fastjson2.JSONObject;
 import com.ccjd.camera.conf.DynamicTask;
-import com.ccjd.camera.conf.UserSetting;
-import com.ccjd.camera.gb28181.bean.InviteStreamType;
-import com.ccjd.camera.gb28181.bean.ParentPlatform;
 import com.ccjd.camera.gb28181.bean.SendRtpItem;
 import com.ccjd.camera.gb28181.transmit.SIPProcessorObserver;
-import com.ccjd.camera.gb28181.transmit.cmd.ISIPCommander;
-import com.ccjd.camera.gb28181.transmit.cmd.ISIPCommanderForPlatform;
 import com.ccjd.camera.gb28181.transmit.event.request.ISIPRequestProcessor;
 import com.ccjd.camera.gb28181.transmit.event.request.SIPRequestProcessorParent;
-import com.ccjd.camera.media.zlm.ZLMServerFactory;
-import com.ccjd.camera.media.zlm.ZlmHttpHookSubscribe;
+import com.ccjd.camera.media.zlm.ZLMHttpHookSubscribe;
+import com.ccjd.camera.media.zlm.ZLMRTPServerFactory;
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
 import com.ccjd.camera.service.IMediaServerService;
-import com.ccjd.camera.service.bean.MessageForPushChannel;
-import com.ccjd.camera.service.bean.RequestPushStreamMsg;
-import com.ccjd.camera.service.redisMsg.RedisGbPlayMsgListener;
 import com.ccjd.camera.storager.IRedisCatchStorage;
-import com.ccjd.camera.storager.IVideoManagerStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import javax.sip.InvalidArgumentException;
+import javax.sip.Dialog;
+import javax.sip.DialogState;
 import javax.sip.RequestEvent;
-import javax.sip.SipException;
 import javax.sip.address.SipURI;
 import javax.sip.header.CallIdHeader;
 import javax.sip.header.FromHeader;
 import javax.sip.header.HeaderAddress;
 import javax.sip.header.ToHeader;
-import java.text.ParseException;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -46,7 +34,7 @@ import java.util.Map;
 public class AckRequestProcessor extends SIPRequestProcessorParent implements InitializingBean, ISIPRequestProcessor {
 
 	private Logger logger = LoggerFactory.getLogger(AckRequestProcessor.class);
-	private final String method = "ACK";
+	private String method = "ACK";
 
 	@Autowired
 	private SIPProcessorObserver sipProcessorObserver;
@@ -61,34 +49,16 @@ public class AckRequestProcessor extends SIPRequestProcessorParent implements In
     private IRedisCatchStorage redisCatchStorage;
 
 	@Autowired
-    private UserSetting userSetting;
-
-	@Autowired
-	private IVideoManagerStorage storager;
-
-	@Autowired
-	private ZLMServerFactory zlmServerFactory;
-
-	@Autowired
-	private ZlmHttpHookSubscribe hookSubscribe;
+	private ZLMRTPServerFactory zlmrtpServerFactory;
 
 	@Autowired
 	private IMediaServerService mediaServerService;
 
 	@Autowired
-	private ZlmHttpHookSubscribe subscribe;
+	private ZLMHttpHookSubscribe subscribe;
 
 	@Autowired
 	private DynamicTask dynamicTask;
-
-	@Autowired
-	private ISIPCommander cmder;
-
-	@Autowired
-	private ISIPCommanderForPlatform commanderForPlatform;
-
-	@Autowired
-	private RedisGbPlayMsgListener redisGbPlayMsgListener;
 
 
 	/**   
@@ -98,80 +68,83 @@ public class AckRequestProcessor extends SIPRequestProcessorParent implements In
 	 */
 	@Override
 	public void process(RequestEvent evt) {
+		Dialog dialog = evt.getDialog();
 		CallIdHeader callIdHeader = (CallIdHeader)evt.getRequest().getHeader(CallIdHeader.NAME);
+		if (dialog == null) return;
+		if (dialog.getState()== DialogState.CONFIRMED) {
+			String platformGbId = ((SipURI) ((HeaderAddress) evt.getRequest().getHeader(FromHeader.NAME)).getAddress().getURI()).getUser();
+			logger.info("ACK请求： platformGbId->{}", platformGbId);
+			// 取消设置的超时任务
+			dynamicTask.stop(callIdHeader.getCallId());
+			String channelId = ((SipURI) ((HeaderAddress) evt.getRequest().getHeader(ToHeader.NAME)).getAddress().getURI()).getUser();
+			SendRtpItem sendRtpItem =  redisCatchStorage.querySendRTPServer(platformGbId, channelId, null, callIdHeader.getCallId());
+			String is_Udp = sendRtpItem.isTcp() ? "0" : "1";
+			MediaServerItem mediaInfo = mediaServerService.getOne(sendRtpItem.getMediaServerId());
+			logger.info("收到ACK，开始向上级推流 rtp/{}", sendRtpItem.getStreamId());
+			Map<String, Object> param = new HashMap<>();
+			param.put("vhost","__defaultVhost__");
+			param.put("app",sendRtpItem.getApp());
+			param.put("stream",sendRtpItem.getStreamId());
+			param.put("ssrc", sendRtpItem.getSsrc());
+			param.put("dst_url",sendRtpItem.getIp());
+			param.put("dst_port", sendRtpItem.getPort());
+			param.put("is_udp", is_Udp);
+			param.put("src_port", sendRtpItem.getLocalPort());
+			zlmrtpServerFactory.startSendRtpStream(mediaInfo, param);
 
-		String platformGbId = ((SipURI) ((HeaderAddress) evt.getRequest().getHeader(FromHeader.NAME)).getAddress().getURI()).getUser();
-		logger.info("[收到ACK]： platformGbId->{}", platformGbId);
-		ParentPlatform parentPlatform = storager.queryParentPlatByServerGBId(platformGbId);
-		// 取消设置的超时任务
-		dynamicTask.stop(callIdHeader.getCallId());
-		String channelId = ((SipURI) ((HeaderAddress) evt.getRequest().getHeader(ToHeader.NAME)).getAddress().getURI()).getUser();
-		SendRtpItem sendRtpItem =  redisCatchStorage.querySendRTPServer(platformGbId, channelId, null, callIdHeader.getCallId());
-		if (sendRtpItem == null) {
-			logger.warn("[收到ACK]：未找到通道({})的推流信息", channelId);
-			return;
-		}
-		String is_Udp = sendRtpItem.isTcp() ? "0" : "1";
-		MediaServerItem mediaInfo = mediaServerService.getOne(sendRtpItem.getMediaServerId());
-		logger.info("收到ACK，rtp/{}开始向上级推流, 目标={}:{}，SSRC={}", sendRtpItem.getStreamId(), sendRtpItem.getIp(), sendRtpItem.getPort(), sendRtpItem.getSsrc());
-		Map<String, Object> param = new HashMap<>(12);
-		param.put("vhost","__defaultVhost__");
-		param.put("app",sendRtpItem.getApp());
-		param.put("stream",sendRtpItem.getStreamId());
-		param.put("ssrc", sendRtpItem.getSsrc());
-		param.put("dst_url",sendRtpItem.getIp());
-		param.put("dst_port", sendRtpItem.getPort());
-		param.put("is_udp", is_Udp);
-		param.put("src_port", sendRtpItem.getLocalPort());
-		param.put("pt", sendRtpItem.getPt());
-		param.put("use_ps", sendRtpItem.isUsePs() ? "1" : "0");
-		param.put("only_audio", sendRtpItem.isOnlyAudio() ? "1" : "0");
-		if (!sendRtpItem.isTcp()) {
-			// 开启rtcp保活
-			param.put("udp_rtcp_timeout", sendRtpItem.isRtcp()? "1":"0");
-		}
 
-		if (mediaInfo == null) {
-			RequestPushStreamMsg requestPushStreamMsg = RequestPushStreamMsg.getInstance(
-					sendRtpItem.getMediaServerId(), sendRtpItem.getApp(), sendRtpItem.getStreamId(),
-					sendRtpItem.getIp(), sendRtpItem.getPort(), sendRtpItem.getSsrc(), sendRtpItem.isTcp(),
-					sendRtpItem.getLocalPort(), sendRtpItem.getPt(), sendRtpItem.isUsePs(), sendRtpItem.isOnlyAudio());
-			redisGbPlayMsgListener.sendMsgForStartSendRtpStream(sendRtpItem.getServerId(), requestPushStreamMsg, jsonObject->{
-				startSendRtpStreamHand(evt, sendRtpItem, parentPlatform, jsonObject, param, callIdHeader);
-			});
-		}else {
-			JSONObject startSendRtpStreamResult = zlmServerFactory.startSendRtpStream(mediaInfo, param);
-			if (startSendRtpStreamResult != null) {
-				startSendRtpStreamHand(evt, sendRtpItem, parentPlatform, startSendRtpStreamResult, param, callIdHeader);
-			}
-		}
-	}
-	private void startSendRtpStreamHand(RequestEvent evt, SendRtpItem sendRtpItem, ParentPlatform parentPlatform,
-										JSONObject jsonObject, Map<String, Object> param, CallIdHeader callIdHeader) {
-		if (jsonObject == null) {
-			logger.error("RTP推流失败: 请检查ZLM服务");
-		} else if (jsonObject.getInteger("code") == 0) {
-			logger.info("调用ZLM推流接口, 结果： {}",  jsonObject);
-			logger.info("RTP推流成功[ {}/{} ]，{}->{}:{}, " ,param.get("app"), param.get("stream"), jsonObject.getString("local_port"), param.get("dst_url"), param.get("dst_port"));
-			if (sendRtpItem.getPlayType() == InviteStreamType.PUSH) {
-				MessageForPushChannel messageForPushChannel = MessageForPushChannel.getInstance(0, sendRtpItem.getApp(), sendRtpItem.getStreamId(),
-						sendRtpItem.getChannelId(), parentPlatform.getServerGBId(), parentPlatform.getName(), userSetting.getServerId(),
-						sendRtpItem.getMediaServerId());
-				messageForPushChannel.setPlatFormIndex(parentPlatform.getId());
-				redisCatchStorage.sendPlatformStartPlayMsg(messageForPushChannel);
-			}
-		} else {
-			logger.error("RTP推流失败: {}, 参数：{}",jsonObject.getString("msg"), JSON.toJSONString(param));
-			if (sendRtpItem.isOnlyAudio()) {
-				// TODO 可能是语音对讲
-			}else {
-				// 向上级平台
-				try {
-					commanderForPlatform.streamByeCmd(parentPlatform, callIdHeader.getCallId());
-				} catch (SipException | InvalidArgumentException | ParseException e) {
-					logger.error("[命令发送失败] 国标级联 发送BYE: {}", e.getMessage());
-				}
-			}
+
+//			if (streamInfo == null) { // 流还没上来，对方就回复ack
+//				logger.info("监听流以等待流上线1 rtp/{}", sendRtpItem.getStreamId());
+//				// 监听流上线
+//				// 添加订阅
+//				JSONObject subscribeKey = new JSONObject();
+//				subscribeKey.put("app", "rtp");
+//				subscribeKey.put("stream", sendRtpItem.getStreamId());
+//				subscribeKey.put("regist", true);
+//				subscribeKey.put("schema", "rtmp");
+//				subscribeKey.put("mediaServerId", sendRtpItem.getMediaServerId());
+//				subscribe.addSubscribe(ZLMHttpHookSubscribe.HookType.on_stream_changed, subscribeKey,
+//						(MediaServerItem mediaServerItemInUse, JSONObject json)->{
+//							Map<String, Object> param = new HashMap<>();
+//							param.put("vhost","__defaultVhost__");
+//							param.put("app",json.getString("app"));
+//							param.put("stream",json.getString("stream"));
+//							param.put("ssrc", sendRtpItem.getSsrc());
+//							param.put("dst_url",sendRtpItem.getIp());
+//							param.put("dst_port", sendRtpItem.getPort());
+//							param.put("is_udp", is_Udp);
+//							param.put("src_port", sendRtpItem.getLocalPort());
+//							zlmrtpServerFactory.startSendRtpStream(mediaInfo, param);
+//						});
+//			}else {
+//				Map<String, Object> param = new HashMap<>();
+//				param.put("vhost","__defaultVhost__");
+//				param.put("app",streamInfo.getApp());
+//				param.put("stream",streamInfo.getStream());
+//				param.put("ssrc", sendRtpItem.getSsrc());
+//				param.put("dst_url",sendRtpItem.getIp());
+//				param.put("dst_port", sendRtpItem.getPort());
+//				param.put("is_udp", is_Udp);
+//				param.put("src_port", sendRtpItem.getLocalPort());
+//
+//				JSONObject jsonObject = zlmrtpServerFactory.startSendRtpStream(mediaInfo, param);
+//				if (jsonObject.getInteger("code") != 0) {
+//					logger.info("监听流以等待流上线2 {}/{}", streamInfo.getApp(), streamInfo.getStream());
+//					// 监听流上线
+//					// 添加订阅
+//					JSONObject subscribeKey = new JSONObject();
+//					subscribeKey.put("app", "rtp");
+//					subscribeKey.put("stream", streamInfo.getStream());
+//					subscribeKey.put("regist", true);
+//					subscribeKey.put("schema", "rtmp");
+//					subscribeKey.put("mediaServerId", sendRtpItem.getMediaServerId());
+//					subscribe.addSubscribe(ZLMHttpHookSubscribe.HookType.on_stream_changed, subscribeKey,
+//							(MediaServerItem mediaServerItemInUse, JSONObject json)->{
+//								zlmrtpServerFactory.startSendRtpStream(mediaInfo, param);
+//							});
+//				}
+//			}
 		}
 	}
 }

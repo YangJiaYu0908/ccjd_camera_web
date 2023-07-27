@@ -90,12 +90,12 @@
 		<appender-ref ref="STDOUT" />
 	</root>
 
-	<logger name="com.genersoft.iot.vmp" level="info" additivity="true">
+	<logger name="com.ccjd.camera" level="info" additivity="true">
 		<appender-ref ref="RollingFileError"/>
 		<appender-ref ref="RollingFile"/>
 	</logger>
 
-	<logger name="com.genersoft.iot.vmp.gb28181.conf.StackLoggerImpl" level="info" additivity="true">
+	<logger name="com.ccjd.camera.gb28181.conf.StackLoggerImpl" level="info" additivity="true">
 		<appender-ref ref="SipRollingFile" />
 	</logger>
 

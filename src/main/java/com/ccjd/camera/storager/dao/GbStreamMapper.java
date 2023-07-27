@@ -1,6 +1,5 @@
 package com.ccjd.camera.storager.dao;
 
-import com.ccjd.camera.gb28181.bean.DeviceChannel;
 import com.ccjd.camera.gb28181.bean.GbStream;
 import com.ccjd.camera.media.zlm.dto.StreamProxyItem;
 import com.ccjd.camera.media.zlm.dto.StreamPushItem;
@@ -14,94 +13,95 @@ import java.util.List;
 @Repository
 public interface GbStreamMapper {
 
-    @Insert("REPLACE INTO wvp_gb_stream (app, stream, gb_id, name, " +
-            "longitude, latitude, stream_type,media_server_id,create_time) VALUES" +
-            "(#{app}, #{stream}, #{gbId}, #{name}, " +
-            "#{longitude}, #{latitude}, #{streamType}, " +
-            "#{mediaServerId}, #{createTime})")
+    @Insert("REPLACE INTO gb_stream (app, stream, gbId, name, " +
+            "longitude, latitude, streamType, mediaServerId, status, createStamp) VALUES" +
+            "('${app}', '${stream}', '${gbId}', '${name}', " +
+            "'${longitude}', '${latitude}', '${streamType}', " +
+            "'${mediaServerId}', ${status}, ${createStamp})")
     @Options(useGeneratedKeys = true, keyProperty = "gbStreamId", keyColumn = "gbStreamId")
     int add(GbStream gbStream);
 
-    @Update("UPDATE wvp_gb_stream " +
+    @Update("UPDATE gb_stream " +
             "SET app=#{app}," +
             "stream=#{stream}," +
-            "gb_id=#{gbId}," +
+            "gbId=#{gbId}," +
             "name=#{name}," +
-            "stream_type=#{streamType}," +
+            "streamType=#{streamType}," +
             "longitude=#{longitude}, " +
             "latitude=#{latitude}," +
-            "media_server_id=#{mediaServerId}" +
+            "mediaServerId=#{mediaServerId}," +
+            "status=${status} " +
             "WHERE app=#{app} AND stream=#{stream}")
     int updateByAppAndStream(GbStream gbStream);
 
-    @Update("UPDATE wvp_gb_stream " +
+    @Update("UPDATE gb_stream " +
             "SET app=#{app}," +
             "stream=#{stream}," +
-            "gb_id=#{gbId}," +
+            "gbId=#{gbId}," +
             "name=#{name}," +
-            "stream_type=#{streamType}," +
+            "streamType=#{streamType}," +
             "longitude=#{longitude}, " +
             "latitude=#{latitude}," +
-            "media_server_id=#{mediaServerId}" +
-            "WHERE gb_stream_id=#{gbStreamId}")
+            "mediaServerId=#{mediaServerId}," +
+            "status=${status} " +
+            "WHERE gbStreamId=#{gbStreamId}")
     int update(GbStream gbStream);
 
-    @Delete("DELETE FROM wvp_gb_stream WHERE app=#{app} AND stream=#{stream}")
+    @Delete("DELETE FROM gb_stream WHERE app=#{app} AND stream=#{stream}")
     int del(String app, String stream);
 
     @Select("<script> "+
-            "SELECT gs.* FROM wvp_gb_stream gs " +
+            "SELECT gs.* FROM gb_stream gs " +
             "WHERE " +
             "1=1 " +
-            " <if test='catalogId != null'> AND gs.gb_stream_id in" +
-            "(select pgs.gb_stream_id from wvp_platform_gb_stream pgs where pgs.platform_id = #{platformId} and pgs.catalog_id=#{catalogId})</if> " +
-            " <if test='catalogId == null'> AND gs.gb_stream_id not in" +
-            "(select pgs.gb_stream_id from wvp_platform_gb_stream pgs where pgs.platform_id = #{platformId}) </if> " +
-            " <if test='query != null'> AND (gs.app LIKE concat('%',#{query},'%') OR gs.stream LIKE concat('%',#{query},'%') OR gs.gb_id LIKE concat('%',#{query},'%') OR gs.name LIKE concat('%',#{query},'%'))</if> " +
-            " <if test='mediaServerId != null' > AND gs.media_server_id=#{mediaServerId} </if>" +
-            " order by gs.gb_stream_id asc " +
+            " <if test='catalogId != null'> AND gs.gbStreamId in" +
+            "(select pgs.gbStreamId from platform_gb_stream pgs where pgs.platformId = #{platformId} and pgs.catalogId=#{catalogId})</if> " +
+            " <if test='catalogId == null'> AND gs.gbStreamId not in" +
+            "(select pgs.gbStreamId from platform_gb_stream pgs where pgs.platformId = #{platformId}) </if> " +
+            " <if test='query != null'> AND (gs.app LIKE '%${query}%' OR gs.stream LIKE '%${query}%' OR gs.gbId LIKE '%${query}%' OR gs.name LIKE '%${query}%')</if> " +
+            " <if test='pushing == true' > AND gs.status=1</if>" +
+            " <if test='pushing == false' > AND gs.status=0</if>" +
+            " <if test='mediaServerId != null' > AND gs.mediaServerId=#{mediaServerId} </if>" +
+            " order by gs.gbStreamId asc " +
             "</script>")
-    List<GbStream> selectAll(String platformId, String catalogId, String query, String mediaServerId);
+    List<GbStream> selectAll(String platformId, String catalogId, String query, Boolean pushing, String mediaServerId);
 
-    @Select("SELECT * FROM wvp_gb_stream WHERE app=#{app} AND stream=#{stream}")
-    GbStream selectOne(String app, String stream);
+    @Select("SELECT * FROM gb_stream WHERE app=#{app} AND stream=#{stream}")
+    StreamProxyItem selectOne(String app, String stream);
 
-    @Select("SELECT * FROM wvp_gb_stream WHERE gb_id=#{gbId}")
+    @Select("SELECT * FROM gb_stream WHERE gbId=#{gbId}")
     List<GbStream> selectByGBId(String gbId);
 
-    @Select("SELECT gs.*, pgs.platform_id as platform_id, pgs.catalog_id as catalog_id FROM wvp_gb_stream gs " +
-            "LEFT JOIN wvp_platform_gb_stream pgs ON gs.gb_stream_id = pgs.gb_stream_id " +
-            "WHERE gs.gb_id = #{gbId} AND pgs.platform_id = #{platformId}")
+    @Select("SELECT gs.*, pgs.platformId as platformId, pgs.catalogId as catalogId FROM gb_stream gs " +
+            "LEFT JOIN platform_gb_stream pgs ON gs.gbStreamId = pgs.gbStreamId " +
+            "WHERE gs.gbId = '${gbId}' AND pgs.platformId = '${platformId}'")
     GbStream queryStreamInPlatform(String platformId, String gbId);
 
-    @Select("<script> "+
-            "select gt.gb_id as channel_id, gt.name, 'wvp-pro' as manufacture,  st.status, gt.longitude, gt.latitude, pc.id as parent_id," +
-            "       '1' as register_way, pc.civil_code, 'live' as model, 'wvp-pro' as owner, '0' as parental,'0' as secrecy" +
-            " from wvp_gb_stream gt " +
-            " left join (" +
-            "    select " +
-            " <if test='usPushingAsStatus != true'> sp.status as status, </if>" +
-            " <if test='usPushingAsStatus == true'> sp.push_ing as status, </if>" +
-            "sp.app, sp.stream from wvp_stream_push sp" +
-            "    union all" +
-            "    select spxy.status, spxy.app, spxy.stream from wvp_stream_proxy spxy" +
-            " ) st on st.app = gt.app and st.stream = gt.stream" +
-            " left join wvp_platform_gb_stream pgs on gt.gb_stream_id = pgs.gb_stream_id" +
-            " left join wvp_platform_catalog pc on pgs.catalog_id = pc.id and pgs.platform_id = pc.platform_id" +
-            " where pgs.platform_id=#{platformId}" +
-            "</script>")
-    List<DeviceChannel> queryGbStreamListInPlatform(String platformId, boolean usPushingAsStatus);
+    @Select("SELECT gs.*, pgs.platformId as platformId, pgs.catalogId as catalogId FROM gb_stream gs " +
+            "LEFT JOIN platform_gb_stream pgs ON gs.gbStreamId = pgs.gbStreamId " +
+            "WHERE pgs.platformId = #{platformId}")
+    List<GbStream> queryGbStreamListInPlatform(String platformId);
 
 
-    @Select("SELECT gs.* FROM wvp_gb_stream gs left join wvp_platform_gb_stream pgs " +
-            "ON gs.gb_stream_id = pgs.gb_stream_id WHERE pgs.gb_stream_id is NULL")
+    @Select("SELECT gs.* FROM gb_stream gs LEFT JOIN platform_gb_stream pgs " +
+            "ON gs.gbStreamId = pgs.gbStreamId WHERE pgs.gbStreamId is NULL")
     List<GbStream> queryStreamNotInPlatform();
 
-    @Delete("DELETE FROM wvp_gb_stream WHERE stream_type=#{type} AND gb_id=NULL AND media_server_id=#{mediaServerId}")
+    @Update("UPDATE gb_stream " +
+            "SET status=${status} " +
+            "WHERE app=#{app} AND stream=#{stream}")
+    int setStatus(String app, String stream, boolean status);
+
+    @Update("UPDATE gb_stream " +
+            "SET status=${status} " +
+            "WHERE mediaServerId=#{mediaServerId} ")
+    void updateStatusByMediaServerId(String mediaServerId, boolean status);
+
+    @Delete("DELETE FROM gb_stream WHERE streamType=#{type} AND gbId=NULL AND mediaServerId=#{mediaServerId}")
     void deleteWithoutGBId(String type, String mediaServerId);
 
     @Delete("<script> "+
-            "DELETE FROM wvp_gb_stream where " +
+            "DELETE FROM gb_stream where " +
             "<foreach collection='streamProxyItemList' item='item' separator='or'>" +
             "(app=#{item.app} and stream=#{item.stream}) " +
             "</foreach>" +
@@ -109,7 +109,7 @@ public interface GbStreamMapper {
     void batchDel(List<StreamProxyItem> streamProxyItemList);
 
     @Delete("<script> "+
-            "DELETE FROM wvp_gb_stream where " +
+            "DELETE FROM gb_stream where " +
             "<foreach collection='gbStreams' item='item' separator='or'>" +
             "(app=#{item.app} and stream=#{item.stream}) " +
             "</foreach>" +
@@ -117,56 +117,34 @@ public interface GbStreamMapper {
     void batchDelForGbStream(List<GbStream> gbStreams);
 
     @Insert("<script> " +
-            "INSERT into wvp_gb_stream " +
-            "(app, stream, gb_id, name, " +
-            "longitude, latitude, stream_type,media_server_id,create_time)" +
+            "INSERT IGNORE into gb_stream " +
+            "(app, stream, gbId, name, " +
+            "longitude, latitude, streamType, mediaServerId, status, createStamp)" +
             "values " +
             "<foreach collection='subList' index='index' item='item' separator=','> " +
-            "(#{item.app}, #{item.stream}, #{item.gbId}, #{item.name}, " +
-            "#{item.longitude}, #{item.latitude}, #{item.streamType}, " +
-            "#{item.mediaServerId}, #{item.createTime}) "+
+            "('${item.app}', '${item.stream}', '${item.gbId}', '${item.name}', " +
+            "'${item.longitude}', '${item.latitude}', '${item.streamType}', " +
+            "'${item.mediaServerId}', ${item.status}, ${item.createStamp}) "+
             "</foreach> " +
             "</script>")
-    @Options(useGeneratedKeys = true, keyProperty = "gbStreamId", keyColumn = "gb_stream_id")
+    @Options(useGeneratedKeys = true, keyProperty = "gbStreamId", keyColumn = "gbStreamId")
     void batchAdd(List<StreamPushItem> subList);
 
     @Update({"<script>" +
             "<foreach collection='gpsMsgInfos' item='item' separator=';'>" +
             " UPDATE" +
-            " wvp_gb_stream" +
-            " SET longitude=#{item.lng}, latitude=#{item.lat} " +
-            "WHERE gb_id=#{item.id}"+
+            " gb_stream" +
+            " SET longitude=${item.lng}, latitude=${item.lat} " +
+            "WHERE gbId=#{item.id}"+
             "</foreach>" +
             "</script>"})
     int updateStreamGPS(List<GPSMsgInfo> gpsMsgInfos);
 
     @Select("<script> "+
-                   "SELECT * FROM wvp_gb_stream where " +
+                   "SELECT * FROM gb_stream where " +
                    "<foreach collection='streamPushItems' item='item' separator='or'>" +
                    "(app=#{item.app} and stream=#{item.stream}) " +
                    "</foreach>" +
                    "</script>")
     List<GbStream> selectAllForAppAndStream(List<StreamPushItem> streamPushItems);
-
-    @Update("UPDATE wvp_gb_stream " +
-            "SET media_server_id=#{mediaServerId}" +
-            "WHERE app=#{app} AND stream=#{stream}")
-    void updateMediaServer(String app, String stream, String mediaServerId);
-
-    @Update("<script> "+
-                " <foreach collection='list' item='item' index='index' separator=';'>"+
-                    "UPDATE wvp_gb_stream " +
-                    " SET name=#{item.name},"+
-                    " gb_id=#{item.gb_id}"+
-                    " WHERE app=#{item.app} and stream=#{item.stream}"+
-                "</foreach>"+
-            "</script>")
-    int updateGbIdOrName(List<StreamPushItem> streamPushItemForUpdate);
-
-    @Select("SELECT status FROM wvp_stream_proxy WHERE app=#{app} AND stream=#{stream}")
-    Boolean selectStatusForProxy(String app, String stream);
-
-    @Select("SELECT status FROM wvp_stream_push WHERE app=#{app} AND stream=#{stream}")
-    Boolean selectStatusForPush(String app, String stream);
-
 }

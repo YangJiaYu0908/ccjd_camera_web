@@ -2,6 +2,7 @@ package com.ccjd.camera.conf;
 
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
 import com.ccjd.camera.service.IMediaServerService;
+import org.apache.catalina.connector.ClientAbortException;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpRequest;
 import org.apache.http.HttpResponse;
@@ -13,8 +14,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.annotation.Order;
-import org.springframework.util.ObjectUtils;
+import org.springframework.util.StringUtils;
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
@@ -26,7 +26,6 @@ import java.net.ConnectException;
  */
 @SuppressWarnings(value = {"rawtypes", "unchecked"})
 @Configuration
-@Order(1)
 public class ProxyServletConfig {
 
     private final static Logger logger = LoggerFactory.getLogger(ProxyServletConfig.class);
@@ -55,7 +54,7 @@ public class ProxyServletConfig {
             String queryStr = super.rewriteQueryStringFromRequest(servletRequest, queryString);
             MediaServerItem mediaInfo = getMediaInfoByUri(servletRequest.getRequestURI());
             if (mediaInfo != null) {
-                if (!ObjectUtils.isEmpty(queryStr)) {
+                if (!StringUtils.isEmpty(queryStr)) {
                     queryStr += "&secret=" + mediaInfo.getSecret();
                 }else {
                     queryStr = "secret=" + mediaInfo.getSecret();
@@ -76,7 +75,9 @@ public class ProxyServletConfig {
             } catch (IOException ioException) {
                 if (ioException instanceof ConnectException) {
                     logger.error("zlm 连接失败");
-                }  else {
+                } else if (ioException instanceof ClientAbortException) {
+                    logger.error("zlm: 用户已中断连接，代理终止");
+                } else {
                     logger.error("zlm 代理失败： ", e);
                 }
             } catch (RuntimeException exception){
@@ -125,7 +126,7 @@ public class ProxyServletConfig {
         MediaServerItem getMediaInfoByUri(String uri){
             String[] split = uri.split("/");
             String mediaServerId = split[2];
-            if ("default".equalsIgnoreCase(mediaServerId)) {
+            if ("default".equals(mediaServerId)) {
                 return mediaServerService.getDefaultMediaServer();
             }else {
                 return mediaServerService.getOne(mediaServerId);
@@ -144,7 +145,7 @@ public class ProxyServletConfig {
                 logger.error("[ZLM服务访问代理]，错误：处理url信息时未找到流媒体信息=>{}", requestURI);
                 return  url;
             }
-            if (!ObjectUtils.isEmpty(mediaInfo.getId())) {
+            if (!StringUtils.isEmpty(mediaInfo.getId())) {
                 url = url.replace(mediaInfo.getId() + "/", "");
             }
             return url.replace("default/", "");
@@ -169,14 +170,13 @@ public class ProxyServletConfig {
         protected String rewriteQueryStringFromRequest(HttpServletRequest servletRequest, String queryString) {
             String queryStr = super.rewriteQueryStringFromRequest(servletRequest, queryString);
             MediaServerItem mediaInfo = getMediaInfoByUri(servletRequest.getRequestURI());
-            if (mediaInfo == null) {
-                return null;
-            }
-            String remoteHost = String.format("http://%s:%s", mediaInfo.getStreamIp(), mediaInfo.getRecordAssistPort());
-            if (!ObjectUtils.isEmpty(queryStr)) {
-                queryStr += "&remoteHost=" + remoteHost;
-            }else {
-                queryStr = "remoteHost=" + remoteHost;
+            String remoteHost = String.format("http://%s:%s", mediaInfo.getIp(), mediaInfo.getHttpPort());
+            if (mediaInfo != null) {
+                if (!StringUtils.isEmpty(queryStr)) {
+                    queryStr += "&remoteHost=" + remoteHost;
+                }else {
+                    queryStr = "remoteHost=" + remoteHost;
+                }
             }
             return queryStr;
         }
@@ -193,13 +193,9 @@ public class ProxyServletConfig {
             } catch (IOException ioException) {
                 if (ioException instanceof ConnectException) {
                     logger.error("录像服务 连接失败");
-//                }else if (ioException instanceof ClientAbortException) {
-//                    /**
-//                     * TODO 使用这个代理库实现代理在遇到代理视频文件时，如果是206结果，会遇到报错蛋市目前功能正常，
-//                     * TODO 暂时去除异常处理。后续使用其他代理框架修改测试
-//                     */
-
-                }else {
+                } else if (ioException instanceof ClientAbortException) {
+                    logger.error("录像服务:用户已中断连接，代理终止");
+                } else {
                     logger.error("录像服务 代理失败： ", e);
                 }
             } catch (RuntimeException exception){
@@ -248,7 +244,7 @@ public class ProxyServletConfig {
         MediaServerItem getMediaInfoByUri(String uri){
             String[] split = uri.split("/");
             String mediaServerId = split[2];
-            if ("default".equalsIgnoreCase(mediaServerId)) {
+            if ("default".equals(mediaServerId)) {
                 return mediaServerService.getDefaultMediaServer();
             }else {
                 return mediaServerService.getOne(mediaServerId);
@@ -268,7 +264,7 @@ public class ProxyServletConfig {
                 logger.error("[录像服务访问代理]，错误：处理url信息时未找到流媒体信息=>{}", requestURI);
                 return  url;
             }
-            if (!ObjectUtils.isEmpty(mediaInfo.getId())) {
+            if (!StringUtils.isEmpty(mediaInfo.getId())) {
                 url = url.replace(mediaInfo.getId() + "/", "");
             }
             return url.replace("default/", "");

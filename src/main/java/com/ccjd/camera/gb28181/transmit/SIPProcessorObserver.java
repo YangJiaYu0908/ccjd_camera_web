@@ -1,6 +1,5 @@
 package com.ccjd.camera.gb28181.transmit;
 
-import com.ccjd.camera.gb28181.event.EventPublisher;
 import com.ccjd.camera.gb28181.event.SipSubscribe;
 import com.ccjd.camera.gb28181.transmit.event.request.ISIPRequestProcessor;
 import com.ccjd.camera.gb28181.transmit.event.response.ISIPResponseProcessor;
@@ -14,7 +13,6 @@ import org.springframework.stereotype.Component;
 import javax.sip.*;
 import javax.sip.header.CSeqHeader;
 import javax.sip.header.CallIdHeader;
-import javax.sip.message.Request;
 import javax.sip.message.Response;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,15 +27,17 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
 
     private final static Logger logger = LoggerFactory.getLogger(SIPProcessorObserver.class);
 
-    private static Map<String,  ISIPRequestProcessor> requestProcessorMap = new ConcurrentHashMap<>();
+    private static Map<String, ISIPRequestProcessor> requestProcessorMap = new ConcurrentHashMap<>();
     private static Map<String, ISIPResponseProcessor> responseProcessorMap = new ConcurrentHashMap<>();
     private static ITimeoutProcessor timeoutProcessor;
 
     @Autowired
     private SipSubscribe sipSubscribe;
 
-    @Autowired
-    private EventPublisher eventPublisher;
+
+//    @Autowired
+//    @Qualifier(value = "taskExecutor")
+//    private ThreadPoolTaskExecutor poolTaskExecutor;
 
     /**
      * 添加 request订阅
@@ -62,7 +62,7 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
      * @param processor 处理程序
      */
     public void addTimeoutProcessor(ITimeoutProcessor processor) {
-        timeoutProcessor = processor;
+        this.timeoutProcessor = processor;
     }
 
     /**
@@ -70,13 +70,13 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
      * @param requestEvent RequestEvent事件
      */
     @Override
-    @Async("taskExecutor")
+    @Async
     public void processRequest(RequestEvent requestEvent) {
+        logger.debug("\n收到请求：\n{}", requestEvent.getRequest());
         String method = requestEvent.getRequest().getMethod();
         ISIPRequestProcessor sipRequestProcessor = requestProcessorMap.get(method);
         if (sipRequestProcessor == null) {
             logger.warn("不支持方法{}的request", method);
-            // TODO 回复错误玛
             return;
         }
         requestProcessorMap.get(method).process(requestEvent);
@@ -88,13 +88,13 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
      * @param responseEvent responseEvent事件
      */
     @Override
-    @Async("taskExecutor")
+    @Async
     public void processResponse(ResponseEvent responseEvent) {
         Response response = responseEvent.getResponse();
+        logger.debug("\n收到响应：\n{}", responseEvent.getResponse());
         int status = response.getStatusCode();
 
-        // Success
-        if (((status >= Response.OK) && (status < Response.MULTIPLE_CHOICES)) || status == Response.UNAUTHORIZED) {
+        if (((status >= 200) && (status < 300)) || status == Response.UNAUTHORIZED) { // Success!
             CSeqHeader cseqHeader = (CSeqHeader) responseEvent.getResponse().getHeader(CSeqHeader.NAME);
             String method = cseqHeader.getMethod();
             ISIPResponseProcessor sipRequestProcessor = responseProcessorMap.get(method);
@@ -112,10 +112,10 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
                     }
                 }
             }
-        } else if ((status >= Response.TRYING) && (status < Response.OK)) {
+        } else if ((status >= 100) && (status < 200)) {
             // 增加其它无需回复的响应，如101、180等
         } else {
-            logger.warn("接收到失败的response响应！status：" + status + ",message:" + response.getReasonPhrase());
+            logger.warn("接收到失败的response响应！status：" + status + ",message:" + response.getReasonPhrase()/* .getContent().toString()*/);
             if (responseEvent.getResponse() != null && sipSubscribe.getErrorSubscribesSize() > 0 ) {
                 CallIdHeader callIdHeader = (CallIdHeader)responseEvent.getResponse().getHeader(CallIdHeader.NAME);
                 if (callIdHeader != null) {
@@ -141,28 +141,9 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
      */
     @Override
     public void processTimeout(TimeoutEvent timeoutEvent) {
-        logger.info("[消息发送超时]");
-        ClientTransaction clientTransaction = timeoutEvent.getClientTransaction();
-
-        if (clientTransaction != null) {
-            logger.info("[发送错误订阅] clientTransaction != null");
-            Request request = clientTransaction.getRequest();
-            if (request != null) {
-                logger.info("[发送错误订阅] request != null");
-                CallIdHeader callIdHeader = (CallIdHeader) request.getHeader(CallIdHeader.NAME);
-                if (callIdHeader != null) {
-                    logger.info("[发送错误订阅]");
-                    SipSubscribe.Event subscribe = sipSubscribe.getErrorSubscribe(callIdHeader.getCallId());
-                    SipSubscribe.EventResult eventResult = new SipSubscribe.EventResult(timeoutEvent);
-                    if (subscribe != null){
-                        subscribe.response(eventResult);
-                    }
-                    sipSubscribe.removeOkSubscribe(callIdHeader.getCallId());
-                    sipSubscribe.removeErrorSubscribe(callIdHeader.getCallId());
-                }
-            }
+        if(timeoutProcessor != null) {
+            timeoutProcessor.process(timeoutEvent);
         }
-        eventPublisher.requestTimeOut(timeoutEvent);
     }
 
     @Override
@@ -172,12 +153,6 @@ public class SIPProcessorObserver implements ISIPProcessorObserver {
 
     @Override
     public void processTransactionTerminated(TransactionTerminatedEvent transactionTerminatedEvent) {
-//        if (transactionTerminatedEvent.isServerTransaction()) {
-//            ServerTransaction serverTransaction = transactionTerminatedEvent.getServerTransaction();
-//            serverTransaction.get
-//        }
-
-
 //        Transaction transaction = null;
 //        System.out.println("processTransactionTerminated");
 //        if (transactionTerminatedEvent.isServerTransaction()) {

@@ -1,29 +1,27 @@
 package com.ccjd.camera.service.impl;
 
-import com.alibaba.fastjson2.JSON;
-import com.alibaba.fastjson2.JSONArray;
-import com.alibaba.fastjson2.JSONObject;
-import com.ccjd.camera.common.CommonCallback;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 import com.ccjd.camera.common.VideoManagerConstants;
-import com.ccjd.camera.conf.DynamicTask;
 import com.ccjd.camera.conf.SipConfig;
 import com.ccjd.camera.conf.UserSetting;
-import com.ccjd.camera.conf.exception.ControllerException;
 import com.ccjd.camera.gb28181.event.EventPublisher;
-import com.ccjd.camera.gb28181.session.SSRCFactory;
-import com.ccjd.camera.media.zlm.*;
+import com.ccjd.camera.gb28181.session.SsrcConfig;
+import com.ccjd.camera.gb28181.session.VideoStreamSessionManager;
+import com.ccjd.camera.media.zlm.ZLMRESTfulUtils;
+import com.ccjd.camera.media.zlm.ZLMRTPServerFactory;
+import com.ccjd.camera.media.zlm.ZLMServerConfig;
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
-import com.ccjd.camera.media.zlm.dto.ServerKeepaliveData;
-import com.ccjd.camera.service.IInviteStreamService;
 import com.ccjd.camera.service.IMediaServerService;
-import com.ccjd.camera.service.bean.MediaServerLoad;
+import com.ccjd.camera.service.IStreamProxyService;
 import com.ccjd.camera.service.bean.SSRCInfo;
-import com.ccjd.camera.storager.IRedisCatchStorage;
+import com.ccjd.camera.storager.IVideoManagerStorage;
 import com.ccjd.camera.storager.dao.MediaServerMapper;
-import com.ccjd.camera.utils.DateUtil;
-import com.ccjd.camera.utils.JsonUtil;
+import com.ccjd.camera.utils.redis.JedisUtil;
 import com.ccjd.camera.utils.redis.RedisUtil;
-import com.ccjd.camera.vmanager.bean.ErrorCode;
+import com.ccjd.camera.vmanager.bean.WVPResult;
+import okhttp3.FormBody;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -31,15 +29,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
-import org.springframework.util.ObjectUtils;
+import org.springframework.util.StringUtils;
 
-import java.io.File;
-import java.time.LocalDateTime;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 /**
@@ -50,13 +47,8 @@ public class MediaServerServiceImpl implements IMediaServerService {
 
     private final static Logger logger = LoggerFactory.getLogger(MediaServerServiceImpl.class);
 
-    private final String zlmKeepaliveKeyPrefix = "zlm-keepalive_";
-
     @Autowired
     private SipConfig sipConfig;
-
-    @Autowired
-    private SSRCFactory ssrcFactory;
 
     @Value("${server.ssl.enabled:false}")
     private boolean sslEnabled;
@@ -68,124 +60,113 @@ public class MediaServerServiceImpl implements IMediaServerService {
     private UserSetting userSetting;
 
     @Autowired
-    private SendRtpPortManager sendRtpPortManager;
-
-    @Autowired
-    private AssistRESTfulUtils assistRESTfulUtils;
-
-    @Autowired
     private ZLMRESTfulUtils zlmresTfulUtils;
 
     @Autowired
     private MediaServerMapper mediaServerMapper;
 
     @Autowired
-    private DataSourceTransactionManager dataSourceTransactionManager;
+    DataSourceTransactionManager dataSourceTransactionManager;
 
     @Autowired
-    private TransactionDefinition transactionDefinition;
-
+    TransactionDefinition transactionDefinition;
 
     @Autowired
-    private ZLMServerFactory zlmServerFactory;
+    private VideoStreamSessionManager streamSession;
+
+    @Autowired
+    private ZLMRTPServerFactory zlmrtpServerFactory;
+
+    @Autowired
+    private RedisUtil redisUtil;
+
+    @Autowired
+    private IVideoManagerStorage storager;
+
+    @Autowired
+    private IStreamProxyService streamProxyService;
 
     @Autowired
     private EventPublisher publisher;
 
     @Autowired
-    private DynamicTask dynamicTask;
+    JedisUtil jedisUtil;
 
-    @Autowired
-    private IRedisCatchStorage redisCatchStorage;
-
-    @Autowired
-    private IInviteStreamService inviteStreamService;
-
-    @Autowired
-    private RedisTemplate<Object, Object> redisTemplate;
-
+    private final SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
     /**
      * 初始化
      */
     @Override
     public void updateVmServer(List<MediaServerItem>  mediaServerItemList) {
-        logger.info("[zlm] 缓存初始化 ");
+        logger.info("[缓存初始化] Media Server ");
         for (MediaServerItem mediaServerItem : mediaServerItemList) {
-            if (ObjectUtils.isEmpty(mediaServerItem.getId())) {
+            if (StringUtils.isEmpty(mediaServerItem.getId())) {
                 continue;
             }
             // 更新
-            if (ssrcFactory.hasMediaServerSSRC(mediaServerItem.getId())) {
-                ssrcFactory.initMediaServerSSRC(mediaServerItem.getId(), null);
+            if (mediaServerItem.getSsrcConfig() == null) {
+                SsrcConfig ssrcConfig = new SsrcConfig(mediaServerItem.getId(), null, sipConfig.getDomain());
+                mediaServerItem.setSsrcConfig(ssrcConfig);
+                redisUtil.set(VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerItem.getId(), mediaServerItem);
             }
             // 查询redis是否存在此mediaServer
             String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerItem.getId();
-            Boolean hasKey = redisTemplate.hasKey(key);
-            if (hasKey != null && ! hasKey) {
-                redisTemplate.opsForValue().set(key, mediaServerItem);
+            if (!redisUtil.hasKey(key)) {
+                redisUtil.set(key, mediaServerItem);
             }
+
         }
     }
 
+    @Override
+    public SSRCInfo openRTPServer(MediaServerItem mediaServerItem, String streamId, boolean ssrcCheck) {
+        return openRTPServer(mediaServerItem, streamId, ssrcCheck,false);
+    }
 
     @Override
-    public SSRCInfo openRTPServer(MediaServerItem mediaServerItem, String streamId, String presetSsrc, boolean ssrcCheck,
-                                  boolean isPlayback, Integer port, Boolean reUsePort, Integer tcpMode) {
+    public SSRCInfo openRTPServer(MediaServerItem mediaServerItem, String streamId, boolean ssrcCheck, boolean isPlayback) {
         if (mediaServerItem == null || mediaServerItem.getId() == null) {
-            logger.info("[openRTPServer] 失败, mediaServerItem == null || mediaServerItem.getId() == null");
             return null;
         }
         // 获取mediaServer可用的ssrc
-        String ssrc;
-        if (presetSsrc != null) {
-            ssrc = presetSsrc;
+        String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerItem.getId();
+
+        SsrcConfig ssrcConfig = mediaServerItem.getSsrcConfig();
+        if (ssrcConfig == null) {
+            logger.info("media server [ {} ] ssrcConfig is null", mediaServerItem.getId());
+            return null;
         }else {
+            String ssrc = null;
             if (isPlayback) {
-                ssrc = ssrcFactory.getPlayBackSsrc(mediaServerItem.getId());
+                ssrc = ssrcConfig.getPlayBackSsrc();
             }else {
-                ssrc = ssrcFactory.getPlaySsrc(mediaServerItem.getId());
+                ssrc = ssrcConfig.getPlaySsrc();
             }
-        }
 
-        if (streamId == null) {
-            streamId = String.format("%08x", Integer.parseInt(ssrc)).toUpperCase();
+            if (streamId == null) {
+                streamId = String.format("%08x", Integer.parseInt(ssrc)).toUpperCase();
+            }
+            int rtpServerPort = mediaServerItem.getRtpProxyPort();
+            if (mediaServerItem.isRtpEnable()) {
+                rtpServerPort = zlmrtpServerFactory.createRTPServer(mediaServerItem, streamId, ssrcCheck?Integer.parseInt(ssrc):0);
+            }
+            redisUtil.set(key, mediaServerItem);
+            return new SSRCInfo(rtpServerPort, ssrc, streamId);
         }
-        int rtpServerPort;
-        if (mediaServerItem.isRtpEnable()) {
-            rtpServerPort = zlmServerFactory.createRTPServer(mediaServerItem, streamId, ssrcCheck?Integer.parseInt(ssrc):0, port, reUsePort, tcpMode);
-        } else {
-            rtpServerPort = mediaServerItem.getRtpProxyPort();
-        }
-        return new SSRCInfo(rtpServerPort, ssrc, streamId);
     }
 
     @Override
-    public void closeRTPServer(MediaServerItem mediaServerItem, String streamId) {
-        if (mediaServerItem == null) {
-            return;
-        }
-        zlmServerFactory.closeRtpServer(mediaServerItem, streamId);
-    }
-
-    @Override
-    public void closeRTPServer(MediaServerItem mediaServerItem, String streamId, CommonCallback<Boolean> callback) {
-        if (mediaServerItem == null) {
-            callback.run(false);
-            return;
-        }
-        zlmServerFactory.closeRtpServer(mediaServerItem, streamId, callback);
-    }
-
-    @Override
-    public void closeRTPServer(String mediaServerId, String streamId) {
+    public void closeRTPServer(String deviceId, String channelId, String stream) {
+        String mediaServerId = streamSession.getMediaServerId(deviceId, channelId, stream);
+        String ssrc = streamSession.getSSRC(deviceId, channelId, stream);
         MediaServerItem mediaServerItem = this.getOne(mediaServerId);
-        closeRTPServer(mediaServerItem, streamId);
-    }
-
-    @Override
-    public Boolean updateRtpServerSSRC(MediaServerItem mediaServerItem, String streamId, String ssrc) {
-        return zlmServerFactory.updateRtpServerSSRC(mediaServerItem, streamId, ssrc);
+        if (mediaServerItem != null) {
+            String streamId = String.format("%s_%s", deviceId, channelId);
+            zlmrtpServerFactory.closeRTPServer(mediaServerItem, streamId);
+            releaseSsrc(mediaServerItem.getId(), ssrc);
+        }
+        streamSession.remove(deviceId, channelId, stream);
     }
 
     @Override
@@ -194,7 +175,11 @@ public class MediaServerServiceImpl implements IMediaServerService {
         if (mediaServerItem == null || ssrc == null) {
             return;
         }
-        ssrcFactory.releaseSsrc(mediaServerItemId, ssrc);
+        SsrcConfig ssrcConfig = mediaServerItem.getSsrcConfig();
+        ssrcConfig.releaseSsrc(ssrc);
+        mediaServerItem.setSsrcConfig(ssrcConfig);
+        String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerItem.getId();
+        redisUtil.set(key, mediaServerItem);
     }
 
     /**
@@ -202,8 +187,8 @@ public class MediaServerServiceImpl implements IMediaServerService {
      */
     @Override
     public void clearRTPServer(MediaServerItem mediaServerItem) {
-        ssrcFactory.reset(mediaServerItem.getId());
-
+        mediaServerItem.setSsrcConfig(new SsrcConfig(mediaServerItem.getId(), null, sipConfig.getDomain()));
+        redisUtil.zAdd(VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId(), mediaServerItem.getId(), 0);
     }
 
 
@@ -212,26 +197,31 @@ public class MediaServerServiceImpl implements IMediaServerService {
         mediaServerMapper.update(mediaSerItem);
         MediaServerItem mediaServerItemInRedis = getOne(mediaSerItem.getId());
         MediaServerItem mediaServerItemInDataBase = mediaServerMapper.queryOne(mediaSerItem.getId());
-        if (mediaServerItemInRedis == null || ssrcFactory.hasMediaServerSSRC(mediaSerItem.getId())) {
-            ssrcFactory.initMediaServerSSRC(mediaServerItemInDataBase.getId(),null);
+        if (mediaServerItemInRedis != null && mediaServerItemInRedis.getSsrcConfig() != null) {
+            mediaServerItemInDataBase.setSsrcConfig(mediaServerItemInRedis.getSsrcConfig());
+        }else {
+            mediaServerItemInDataBase.setSsrcConfig(
+                    new SsrcConfig(
+                            mediaServerItemInDataBase.getId(),
+                            null,
+                            sipConfig.getDomain()
+                    )
+            );
         }
         String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerItemInDataBase.getId();
-        redisTemplate.opsForValue().set(key, mediaServerItemInDataBase);
+        redisUtil.set(key, mediaServerItemInDataBase);
     }
 
     @Override
     public List<MediaServerItem> getAll() {
         List<MediaServerItem> result = new ArrayList<>();
-        List<Object> mediaServerKeys = RedisUtil.scan(redisTemplate, String.format("%S*", VideoManagerConstants.MEDIA_SERVER_PREFIX+ userSetting.getServerId() + "_" ));
+        List<Object> mediaServerKeys = redisUtil.scan(String.format("%S*", VideoManagerConstants.MEDIA_SERVER_PREFIX+ userSetting.getServerId() + "_" ));
         String onlineKey = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
         for (Object mediaServerKey : mediaServerKeys) {
             String key = (String) mediaServerKey;
-            MediaServerItem mediaServerItem = JsonUtil.redisJsonToObject(redisTemplate, key, MediaServerItem.class);
-            if (Objects.isNull(mediaServerItem)) {
-                continue;
-            }
+            MediaServerItem mediaServerItem = (MediaServerItem) redisUtil.get(key);
             // 检查状态
-            Double aDouble = redisTemplate.opsForZSet().score(onlineKey, mediaServerItem.getId());
+            Double aDouble = redisUtil.zScore(onlineKey, mediaServerItem.getId());
             if (aDouble != null) {
                 mediaServerItem.setStatus(true);
             }
@@ -239,10 +229,11 @@ public class MediaServerServiceImpl implements IMediaServerService {
         }
         result.sort((serverItem1, serverItem2)->{
             int sortResult = 0;
-            LocalDateTime localDateTime1 = LocalDateTime.parse(serverItem1.getCreateTime(), DateUtil.formatter);
-            LocalDateTime localDateTime2 = LocalDateTime.parse(serverItem2.getCreateTime(), DateUtil.formatter);
-
-            sortResult = localDateTime1.compareTo(localDateTime2);
+            try {
+                sortResult = format.parse(serverItem1.getCreateTime()).compareTo(format.parse(serverItem2.getCreateTime()));
+            } catch (ParseException e) {
+                e.printStackTrace();
+            }
             return  sortResult;
         });
         return result;
@@ -257,14 +248,13 @@ public class MediaServerServiceImpl implements IMediaServerService {
     @Override
     public List<MediaServerItem> getAllOnline() {
         String key = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
-        Set<Object> mediaServerIdSet = redisTemplate.opsForZSet().reverseRange(key, 0, -1);
+        Set<String> mediaServerIdSet = redisUtil.zRevRange(key, 0, -1);
 
         List<MediaServerItem> result = new ArrayList<>();
         if (mediaServerIdSet != null && mediaServerIdSet.size() > 0) {
-            for (Object mediaServerId : mediaServerIdSet) {
-                String mediaServerIdStr = (String) mediaServerId;
-                String serverKey = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerIdStr;
-                result.add((MediaServerItem) redisTemplate.opsForValue().get(serverKey));
+            for (String mediaServerId : mediaServerIdSet) {
+                String serverKey = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerId;
+                result.add((MediaServerItem) redisUtil.get(serverKey));
             }
         }
         Collections.reverse(result);
@@ -282,7 +272,7 @@ public class MediaServerServiceImpl implements IMediaServerService {
             return null;
         }
         String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerId;
-        return JsonUtil.redisJsonToObject(redisTemplate, key, MediaServerItem.class);
+        return (MediaServerItem)redisUtil.get(key);
     }
 
     @Override
@@ -294,33 +284,41 @@ public class MediaServerServiceImpl implements IMediaServerService {
     @Override
     public void clearMediaServerForOnline() {
         String key = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
-        redisTemplate.delete(key);
+        redisUtil.del(key);
     }
 
     @Override
-    public void add(MediaServerItem mediaServerItem) {
-        mediaServerItem.setCreateTime(DateUtil.getNow());
-        mediaServerItem.setUpdateTime(DateUtil.getNow());
-        mediaServerItem.setHookAliveInterval(30f);
+    public WVPResult<String> add(MediaServerItem mediaServerItem) {
+        WVPResult<String> result = new WVPResult<>();
+        mediaServerItem.setCreateTime(this.format.format(System.currentTimeMillis()));
+        mediaServerItem.setUpdateTime(this.format.format(System.currentTimeMillis()));
+        mediaServerItem.setHookAliveInterval(120);
         JSONObject responseJSON = zlmresTfulUtils.getMediaServerConfig(mediaServerItem);
         if (responseJSON != null) {
             JSONArray data = responseJSON.getJSONArray("data");
             if (data != null && data.size() > 0) {
                 ZLMServerConfig zlmServerConfig= JSON.parseObject(JSON.toJSONString(data.get(0)), ZLMServerConfig.class);
                 if (mediaServerMapper.queryOne(zlmServerConfig.getGeneralMediaServerId()) != null) {
-                    throw new ControllerException(ErrorCode.ERROR100.getCode(),"保存失败，媒体服务ID [ " + zlmServerConfig.getGeneralMediaServerId() + " ] 已存在，请修改媒体服务器配置");
+                    result.setCode(-1);
+                    result.setMsg("保存失败，媒体服务ID [ " + zlmServerConfig.getGeneralMediaServerId() + " ] 已存在，请修改媒体服务器配置");
+                    return result;
                 }
                 mediaServerItem.setId(zlmServerConfig.getGeneralMediaServerId());
                 zlmServerConfig.setIp(mediaServerItem.getIp());
                 mediaServerMapper.add(mediaServerItem);
                 zlmServerOnline(zlmServerConfig);
+                result.setCode(0);
+                result.setMsg("success");
             }else {
-                throw new ControllerException(ErrorCode.ERROR100.getCode(),"连接失败");
+                result.setCode(-1);
+                result.setMsg("连接失败");
             }
 
         }else {
-            throw new ControllerException(ErrorCode.ERROR100.getCode(),"连接失败");
+            result.setCode(-1);
+            result.setMsg("连接失败");
         }
+       return result;
     }
 
     @Override
@@ -354,15 +352,14 @@ public class MediaServerServiceImpl implements IMediaServerService {
      */
     @Override
     public void zlmServerOnline(ZLMServerConfig zlmServerConfig) {
+        logger.info("[ ZLM：{} ]-[ {}:{} ]正在连接",
+                zlmServerConfig.getGeneralMediaServerId(), zlmServerConfig.getIp(), zlmServerConfig.getHttpPort());
 
         MediaServerItem serverItem = mediaServerMapper.queryOne(zlmServerConfig.getGeneralMediaServerId());
         if (serverItem == null) {
             logger.warn("[未注册的zlm] 拒接接入：{}来自{}：{}", zlmServerConfig.getGeneralMediaServerId(), zlmServerConfig.getIp(),zlmServerConfig.getHttpPort() );
             logger.warn("请检查ZLM的<general.mediaServerId>配置是否与WVP的<media.id>一致");
             return;
-        }else {
-            logger.info("[ZLM] 正在连接 : {} -> {}:{}",
-                    zlmServerConfig.getGeneralMediaServerId(), zlmServerConfig.getIp(), zlmServerConfig.getHttpPort());
         }
         serverItem.setHookAliveInterval(zlmServerConfig.getHookAliveInterval());
         if (serverItem.getHttpPort() == 0) {
@@ -388,71 +385,34 @@ public class MediaServerServiceImpl implements IMediaServerService {
         }
         serverItem.setStatus(true);
 
-        if (ObjectUtils.isEmpty(serverItem.getId())) {
+        if (StringUtils.isEmpty(serverItem.getId())) {
             logger.warn("[未注册的zlm] serverItem缺少ID， 无法接入：{}：{}", zlmServerConfig.getIp(),zlmServerConfig.getHttpPort() );
             return;
         }
         mediaServerMapper.update(serverItem);
         String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + zlmServerConfig.getGeneralMediaServerId();
-        if (ssrcFactory.hasMediaServerSSRC(serverItem.getId())) {
-            ssrcFactory.initMediaServerSSRC(zlmServerConfig.getGeneralMediaServerId(), null);
+        if (redisUtil.get(key) == null) {
+            SsrcConfig ssrcConfig = new SsrcConfig(zlmServerConfig.getGeneralMediaServerId(), null, sipConfig.getDomain());
+            serverItem.setSsrcConfig(ssrcConfig);
+        }else {
+            MediaServerItem mediaServerItemInRedis = (MediaServerItem)redisUtil.get(key);
+            serverItem.setSsrcConfig(mediaServerItemInRedis.getSsrcConfig());
         }
-        redisTemplate.opsForValue().set(key, serverItem);
+        redisUtil.set(key, serverItem);
         resetOnlineServerItem(serverItem);
-
-
+        updateMediaServerKeepalive(serverItem.getId(), null);
         if (serverItem.isAutoConfig()) {
-            // 查看assist服务的录像路径配置
-            if (serverItem.getRecordAssistPort() > 0 && userSetting.getRecordPath() == null) {
-                JSONObject info = assistRESTfulUtils.getInfo(serverItem, null);
-                if (info != null && info.getInteger("code") != null && info.getInteger("code") == 0 ) {
-                    JSONObject dataJson = info.getJSONObject("data");
-                    if (dataJson != null) {
-                        String recordPath = dataJson.getString("record");
-                        userSetting.setRecordPath(recordPath);
-                    }
-                }
-            }
             setZLMConfig(serverItem, "0".equals(zlmServerConfig.getHookEnable()));
         }
-        final String zlmKeepaliveKey = zlmKeepaliveKeyPrefix + serverItem.getId();
-        dynamicTask.stop(zlmKeepaliveKey);
-        dynamicTask.startDelay(zlmKeepaliveKey, new KeepAliveTimeoutRunnable(serverItem), (serverItem.getHookAliveInterval().intValue() + 5) * 1000);
         publisher.zlmOnlineEventPublish(serverItem.getId());
-
-        logger.info("[ZLM] 连接成功 {} - {}:{} ",
+        logger.info("[ ZLM：{} ]-[ {}:{} ]连接成功",
                 zlmServerConfig.getGeneralMediaServerId(), zlmServerConfig.getIp(), zlmServerConfig.getHttpPort());
-    }
-
-    class KeepAliveTimeoutRunnable implements Runnable{
-
-        private MediaServerItem serverItem;
-
-        public KeepAliveTimeoutRunnable(MediaServerItem serverItem) {
-            this.serverItem = serverItem;
-        }
-
-        @Override
-        public void run() {
-            logger.info("[zlm心跳到期]：" + serverItem.getId());
-            // 发起http请求验证zlm是否确实无法连接，如果确实无法连接则发送离线事件，否则不作处理
-            JSONObject mediaServerConfig = zlmresTfulUtils.getMediaServerConfig(serverItem);
-            if (mediaServerConfig != null && mediaServerConfig.getInteger("code") == 0) {
-                logger.info("[zlm心跳到期]：{}验证后zlm仍在线，恢复心跳信息,请检查zlm是否可以正常向wvp发送心跳", serverItem.getId());
-                // 添加zlm信息
-                updateMediaServerKeepalive(serverItem.getId(), null);
-            }else {
-                publisher.zlmOfflineEventPublish(serverItem.getId());
-            }
-        }
     }
 
 
     @Override
     public void zlmServerOffline(String mediaServerId) {
         delete(mediaServerId);
-        final String zlmKeepaliveKey = zlmKeepaliveKeyPrefix + mediaServerId;
-        dynamicTask.stop(zlmKeepaliveKey);
     }
 
     @Override
@@ -460,21 +420,22 @@ public class MediaServerServiceImpl implements IMediaServerService {
         // 更新缓存
         String key = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
         // 使用zset的分数作为当前并发量， 默认值设置为0
-        if (redisTemplate.opsForZSet().score(key, serverItem.getId()) == null) {  // 不存在则设置默认值 已存在则重置
-            redisTemplate.opsForZSet().add(key, serverItem.getId(), 0L);
+        if (redisUtil.zScore(key, serverItem.getId()) == null) {  // 不存在则设置默认值 已存在则重置
+            redisUtil.zAdd(key, serverItem.getId(), 0L);
             // 查询服务流数量
-            zlmresTfulUtils.getMediaList(serverItem, null, null, "rtsp",(mediaList ->{
+            zlmresTfulUtils.getMediaList(serverItem, null, null, "rtmp",(mediaList ->{
                 Integer code = mediaList.getInteger("code");
                 if (code == 0) {
                     JSONArray data = mediaList.getJSONArray("data");
                     if (data != null) {
-                        redisTemplate.opsForZSet().add(key, serverItem.getId(), data.size());
+                        redisUtil.zAdd(key, serverItem.getId(), data.size());
                     }
                 }
             }));
         }else {
             clearRTPServer(serverItem);
         }
+
     }
 
 
@@ -484,14 +445,14 @@ public class MediaServerServiceImpl implements IMediaServerService {
             return;
         }
         String key = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
-        redisTemplate.opsForZSet().incrementScore(key, mediaServerId, 1);
+        redisUtil.zIncrScore(key, mediaServerId, 1);
 
     }
 
     @Override
     public void removeCount(String mediaServerId) {
         String key = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
-        redisTemplate.opsForZSet().incrementScore(key, mediaServerId, - 1);
+        redisUtil.zIncrScore(key, mediaServerId, - 1);
     }
 
     /**
@@ -499,42 +460,20 @@ public class MediaServerServiceImpl implements IMediaServerService {
      * @return MediaServerItem
      */
     @Override
-    public MediaServerItem getMediaServerForMinimumLoad(Boolean hasAssist) {
+    public MediaServerItem getMediaServerForMinimumLoad() {
         String key = VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId();
-        Long size = redisTemplate.opsForZSet().zCard(key);
-        if (size  == null || size == 0) {
+
+        if (redisUtil.zSize(key)  == null || redisUtil.zSize(key) == 0) {
             logger.info("获取负载最低的节点时无在线节点");
             return null;
         }
 
         // 获取分数最低的，及并发最低的
-        Set<Object> objects = redisTemplate.opsForZSet().range(key, 0, -1);
+        Set<Object> objects = redisUtil.ZRange(key, 0, -1);
         ArrayList<Object> mediaServerObjectS = new ArrayList<>(objects);
-        MediaServerItem mediaServerItem = null;
-        if (hasAssist == null) {
-            String mediaServerId = (String)mediaServerObjectS.get(0);
-            mediaServerItem = getOne(mediaServerId);
-        }else if (hasAssist) {
-            for (Object mediaServerObject : mediaServerObjectS) {
-                String mediaServerId = (String)mediaServerObject;
-                MediaServerItem serverItem = getOne(mediaServerId);
-                if (serverItem.getRecordAssistPort() > 0) {
-                    mediaServerItem = serverItem;
-                    break;
-                }
-            }
-        }else if (!hasAssist) {
-            for (Object mediaServerObject : mediaServerObjectS) {
-                String mediaServerId = (String)mediaServerObject;
-                MediaServerItem serverItem = getOne(mediaServerId);
-                if (serverItem.getRecordAssistPort() == 0) {
-                    mediaServerItem = serverItem;
-                    break;
-                }
-            }
-        }
 
-        return mediaServerItem;
+        String mediaServerId = (String)mediaServerObjectS.get(0);
+        return getOne(mediaServerId);
     }
 
     /**
@@ -544,72 +483,61 @@ public class MediaServerServiceImpl implements IMediaServerService {
      */
     @Override
     public void setZLMConfig(MediaServerItem mediaServerItem, boolean restart) {
-        logger.info("[ZLM] 正在设置 ：{} -> {}:{}",
+        logger.info("[ ZLM：{} ]-[ {}:{} ]正在设置zlm",
                 mediaServerItem.getId(), mediaServerItem.getIp(), mediaServerItem.getHttpPort());
         String protocol = sslEnabled ? "https" : "http";
         String hookPrex = String.format("%s://%s:%s/index/hook", protocol, mediaServerItem.getHookIp(), serverPort);
-
+        String recordHookPrex = null;
+        if (mediaServerItem.getRecordAssistPort() != 0) {
+            recordHookPrex = String.format("http://127.0.0.1:%s/api/record", mediaServerItem.getRecordAssistPort());
+        }
         Map<String, Object> param = new HashMap<>();
         param.put("api.secret",mediaServerItem.getSecret()); // -profile:v Baseline
-        if (mediaServerItem.getRtspPort() != 0) {
-            param.put("ffmpeg.snap", "%s -rtsp_transport tcp -i %s -y -f mjpeg -t 0.001 %s");
-        }
+        param.put("ffmpeg.cmd","%s -fflags nobuffer -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264  -f flv %s");
         param.put("hook.enable","1");
         param.put("hook.on_flow_report","");
         param.put("hook.on_play",String.format("%s/on_play", hookPrex));
         param.put("hook.on_http_access","");
         param.put("hook.on_publish", String.format("%s/on_publish", hookPrex));
+        param.put("hook.on_record_mp4",recordHookPrex != null? String.format("%s/on_record_mp4", recordHookPrex): "");
         param.put("hook.on_record_ts","");
         param.put("hook.on_rtsp_auth","");
         param.put("hook.on_rtsp_realm","");
         param.put("hook.on_server_started",String.format("%s/on_server_started", hookPrex));
-        param.put("hook.on_shell_login","");
+        param.put("hook.on_shell_login",String.format("%s/on_shell_login", hookPrex));
         param.put("hook.on_stream_changed",String.format("%s/on_stream_changed", hookPrex));
         param.put("hook.on_stream_none_reader",String.format("%s/on_stream_none_reader", hookPrex));
         param.put("hook.on_stream_not_found",String.format("%s/on_stream_not_found", hookPrex));
         param.put("hook.on_server_keepalive",String.format("%s/on_server_keepalive", hookPrex));
-        param.put("hook.on_send_rtp_stopped",String.format("%s/on_send_rtp_stopped", hookPrex));
-        param.put("hook.on_rtp_server_timeout",String.format("%s/on_rtp_server_timeout", hookPrex));
-        if (mediaServerItem.getRecordAssistPort() > 0) {
-            param.put("hook.on_record_mp4",String.format("http://127.0.0.1:%s/api/record/on_record_mp4", mediaServerItem.getRecordAssistPort()));
-        }else {
-            param.put("hook.on_record_mp4","");
-        }
         param.put("hook.timeoutSec","20");
+        param.put("general.streamNoneReaderDelayMS",mediaServerItem.getStreamNoneReaderDelayMS()==-1?"3600000":mediaServerItem.getStreamNoneReaderDelayMS() );
         // 推流断开后可以在超时时间内重新连接上继续推流，这样播放器会接着播放。
         // 置0关闭此特性(推流断开会导致立即断开播放器)
         // 此参数不应大于播放器超时时间
         // 优化此消息以更快的收到流注销事件
-        param.put("protocol.continue_push_ms", "3000" );
+        param.put("general.continue_push_ms", "3000" );
         // 最多等待未初始化的Track时间，单位毫秒，超时之后会忽略未初始化的Track, 设置此选项优化那些音频错误的不规范流，
         // 等zlm支持给每个rtpServer设置关闭音频的时候可以不设置此选项
-//        param.put("general.wait_track_ready_ms", "3000" );
-        if (mediaServerItem.isRtpEnable() && !ObjectUtils.isEmpty(mediaServerItem.getRtpPortRange())) {
+        param.put("general.wait_track_ready_ms", "3000" );
+        if (mediaServerItem.isRtpEnable() && !StringUtils.isEmpty(mediaServerItem.getRtpPortRange())) {
             param.put("rtp_proxy.port_range", mediaServerItem.getRtpPortRange().replace(",", "-"));
-        }
-
-        if (userSetting.getRecordPath() != null) {
-            File recordPathFile = new File(userSetting.getRecordPath());
-            File mp4SavePathFile = recordPathFile.getParentFile().getAbsoluteFile();
-            param.put("protocol.mp4_save_path", mp4SavePathFile.getAbsoluteFile());
-            param.put("record.appName", recordPathFile.getName());
         }
 
         JSONObject responseJSON = zlmresTfulUtils.setServerConfig(mediaServerItem, param);
 
         if (responseJSON != null && responseJSON.getInteger("code") == 0) {
             if (restart) {
-                logger.info("[ZLM] 设置成功,开始重启以保证配置生效 {} -> {}:{}",
+                logger.info("[ ZLM：{} ]-[ {}:{} ]设置zlm成功, 开始重启以保证配置生效",
                         mediaServerItem.getId(), mediaServerItem.getIp(), mediaServerItem.getHttpPort());
                 zlmresTfulUtils.restartServer(mediaServerItem);
             }else {
-                logger.info("[ZLM] 设置成功 {} -> {}:{}",
+                logger.info("[ ZLM：{} ]-[ {}:{} ]设置zlm成功",
                         mediaServerItem.getId(), mediaServerItem.getIp(), mediaServerItem.getHttpPort());
             }
 
 
         }else {
-            logger.info("[ZLM] 设置zlm失败 {} -> {}:{}",
+            logger.info("[ ZLM：{} ]-[ {}:{} ]设置zlm失败",
                     mediaServerItem.getId(), mediaServerItem.getIp(), mediaServerItem.getHttpPort());
         }
 
@@ -618,9 +546,12 @@ public class MediaServerServiceImpl implements IMediaServerService {
 
 
     @Override
-    public MediaServerItem checkMediaServer(String ip, int port, String secret) {
+    public WVPResult<MediaServerItem> checkMediaServer(String ip, int port, String secret) {
+        WVPResult<MediaServerItem> result = new WVPResult<>();
         if (mediaServerMapper.queryOneByHostAndPort(ip, port) != null) {
-            throw new ControllerException(ErrorCode.ERROR100.getCode(), "此连接已存在");
+            result.setCode(-1);
+            result.setMsg("此连接已存在");
+            return result;
         }
         MediaServerItem mediaServerItem = new MediaServerItem();
         mediaServerItem.setIp(ip);
@@ -628,15 +559,21 @@ public class MediaServerServiceImpl implements IMediaServerService {
         mediaServerItem.setSecret(secret);
         JSONObject responseJSON = zlmresTfulUtils.getMediaServerConfig(mediaServerItem);
         if (responseJSON == null) {
-            throw new ControllerException(ErrorCode.ERROR100.getCode(), "连接失败");
+            result.setCode(-1);
+            result.setMsg("连接失败");
+            return result;
         }
         JSONArray data = responseJSON.getJSONArray("data");
         ZLMServerConfig zlmServerConfig = JSON.parseObject(JSON.toJSONString(data.get(0)), ZLMServerConfig.class);
         if (zlmServerConfig == null) {
-            throw new ControllerException(ErrorCode.ERROR100.getCode(), "读取配置失败");
+            result.setCode(-1);
+            result.setMsg("读取配置失败");
+            return result;
         }
         if (mediaServerMapper.queryOne(zlmServerConfig.getGeneralMediaServerId()) != null) {
-            throw new ControllerException(ErrorCode.ERROR100.getCode(), "媒体服务ID [" + zlmServerConfig.getGeneralMediaServerId() + " ] 已存在，请修改媒体服务器配置");
+            result.setCode(-1);
+            result.setMsg("媒体服务ID [" + zlmServerConfig.getGeneralMediaServerId() + " ] 已存在，请修改媒体服务器配置");
+            return result;
         }
         mediaServerItem.setHttpSSlPort(zlmServerConfig.getHttpPort());
         mediaServerItem.setRtmpPort(zlmServerConfig.getRtmpPort());
@@ -645,9 +582,13 @@ public class MediaServerServiceImpl implements IMediaServerService {
         mediaServerItem.setRtspSSLPort(zlmServerConfig.getRtspSSlport());
         mediaServerItem.setRtpProxyPort(zlmServerConfig.getRtpProxyPort());
         mediaServerItem.setStreamIp(ip);
-        mediaServerItem.setHookIp(sipConfig.getIp().split(",")[0]);
+        mediaServerItem.setHookIp(sipConfig.getIp());
         mediaServerItem.setSdpIp(ip);
-        return mediaServerItem;
+        mediaServerItem.setStreamNoneReaderDelayMS(zlmServerConfig.getGeneralStreamNoneReaderDelayMS());
+        result.setCode(0);
+        result.setMsg("成功");
+        result.setData(mediaServerItem);
+        return result;
     }
 
     @Override
@@ -655,6 +596,9 @@ public class MediaServerServiceImpl implements IMediaServerService {
         boolean result = false;
         OkHttpClient client = new OkHttpClient();
         String url = String.format("http://%s:%s/index/api/record",  ip, port);
+
+        FormBody.Builder builder = new FormBody.Builder();
+
         Request request = new Request.Builder()
                 .get()
                 .url(url)
@@ -671,9 +615,9 @@ public class MediaServerServiceImpl implements IMediaServerService {
 
     @Override
     public void delete(String id) {
-        redisTemplate.opsForZSet().remove(VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId(), id);
+        redisUtil.zRemove(VideoManagerConstants.MEDIA_SERVERS_ONLINE_PREFIX + userSetting.getServerId(), id);
         String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + id;
-        redisTemplate.delete(key);
+        redisUtil.del(key);
     }
     @Override
     public void deleteDb(String id){
@@ -682,29 +626,17 @@ public class MediaServerServiceImpl implements IMediaServerService {
     }
 
     @Override
-    public void updateMediaServerKeepalive(String mediaServerId, ServerKeepaliveData data) {
+    public void updateMediaServerKeepalive(String mediaServerId, JSONObject data) {
         MediaServerItem mediaServerItem = getOne(mediaServerId);
         if (mediaServerItem == null) {
-            // 缓存不存在，从数据库查询，如果数据库不存在则是错误的
-            mediaServerItem = getOneFromDatabase(mediaServerId);
-            if (mediaServerItem == null) {
-                logger.warn("[更新ZLM 保活信息] 流媒体{}尚未加入使用,请检查节点中是否含有此流媒体 ", mediaServerId);
-                return;
-            }
             // zlm连接重试
-            logger.warn("[更新ZLM 保活信息]尝试链接zml id {}", mediaServerId);
-            ssrcFactory.initMediaServerSSRC(mediaServerItem.getId(), null);
-            String key = VideoManagerConstants.MEDIA_SERVER_PREFIX + userSetting.getServerId() + "_" + mediaServerItem.getId();
-            redisTemplate.opsForValue().set(key, mediaServerItem);
-            clearRTPServer(mediaServerItem);
-        }
-        final String zlmKeepaliveKey = zlmKeepaliveKeyPrefix + mediaServerItem.getId();
-        dynamicTask.stop(zlmKeepaliveKey);
-        dynamicTask.startDelay(zlmKeepaliveKey, new KeepAliveTimeoutRunnable(mediaServerItem), (mediaServerItem.getHookAliveInterval().intValue() + 5) * 1000);
-    }
 
-    private MediaServerItem getOneFromDatabase(String mediaServerId) {
-        return mediaServerMapper.queryOne(mediaServerId);
+            logger.warn("[更新ZLM 保活信息]失败，未找到流媒体信息");
+            return;
+        }
+        String key = VideoManagerConstants.MEDIA_SERVER_KEEPALIVE_PREFIX + userSetting.getServerId() + "_" + mediaServerId;
+        int hookAliveInterval = mediaServerItem.getHookAliveInterval() + 2;
+        redisUtil.set(key, data, hookAliveInterval);
     }
 
     @Override
@@ -717,31 +649,10 @@ public class MediaServerServiceImpl implements IMediaServerService {
             mediaServerItemMap.put(mediaServerItem.getId(), mediaServerItem);
         }
         for (MediaServerItem mediaServerItem : allInCatch) {
-            if (!mediaServerItemMap.containsKey(mediaServerItem.getId())) {
+            if (mediaServerItemMap.get(mediaServerItem) == null) {
                 delete(mediaServerItem.getId());
             }
         }
-    }
-
-    @Override
-    public boolean checkRtpServer(MediaServerItem mediaServerItem, String app, String stream) {
-        JSONObject rtpInfo = zlmresTfulUtils.getRtpInfo(mediaServerItem, stream);
-        if(rtpInfo.getInteger("code") == 0){
-            return rtpInfo.getBoolean("exist");
-        }
-        return false;
-    }
-
-    @Override
-    public MediaServerLoad getLoad(MediaServerItem mediaServerItem) {
-        MediaServerLoad result = new MediaServerLoad();
-        result.setId(mediaServerItem.getId());
-        result.setPush(redisCatchStorage.getPushStreamCount(mediaServerItem.getId()));
-        result.setProxy(redisCatchStorage.getProxyStreamCount(mediaServerItem.getId()));
-
-        result.setGbReceive(inviteStreamService.getStreamInfoCount(mediaServerItem.getId()));
-        result.setGbSend(redisCatchStorage.getGbSendCount(mediaServerItem.getId()));
-        return result;
     }
 
 }

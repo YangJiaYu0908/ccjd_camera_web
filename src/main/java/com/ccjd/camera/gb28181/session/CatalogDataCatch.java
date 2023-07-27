@@ -4,20 +4,22 @@ import com.ccjd.camera.gb28181.bean.CatalogData;
 import com.ccjd.camera.gb28181.bean.Device;
 import com.ccjd.camera.gb28181.bean.DeviceChannel;
 import com.ccjd.camera.gb28181.bean.SyncStatus;
+import com.ccjd.camera.gb28181.transmit.callback.DeferredResultHolder;
 import com.ccjd.camera.storager.IVideoManagerStorage;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 @Component
 public class CatalogDataCatch {
 
     public static Map<String, CatalogData> data = new ConcurrentHashMap<>();
+
+    @Autowired
+    private DeferredResultHolder deferredResultHolder;
 
     @Autowired
     private IVideoManagerStorage storager;
@@ -26,11 +28,11 @@ public class CatalogDataCatch {
         CatalogData catalogData = data.get(device.getDeviceId());
         if (catalogData == null || catalogData.getStatus().equals(CatalogData.CatalogDataStatus.end)) {
             catalogData = new CatalogData();
-            catalogData.setChannelList(Collections.synchronizedList(new ArrayList<>()));
+            catalogData.setChannelList(new ArrayList<>());
             catalogData.setDevice(device);
             catalogData.setSn(sn);
             catalogData.setStatus(CatalogData.CatalogDataStatus.ready);
-            catalogData.setLastTime(Instant.now());
+            catalogData.setLastTime(new Date(System.currentTimeMillis()));
             data.put(device.getDeviceId(), catalogData);
         }
     }
@@ -42,9 +44,9 @@ public class CatalogDataCatch {
             catalogData.setSn(sn);
             catalogData.setTotal(total);
             catalogData.setDevice(device);
-            catalogData.setChannelList(deviceChannelList);
+            catalogData.setChannelList(new ArrayList<>());
             catalogData.setStatus(CatalogData.CatalogDataStatus.runIng);
-            catalogData.setLastTime(Instant.now());
+            catalogData.setLastTime(new Date(System.currentTimeMillis()));
             data.put(deviceId, catalogData);
         }else {
             // 同一个设备的通道同步请求只考虑一个，其他的直接忽略
@@ -55,72 +57,56 @@ public class CatalogDataCatch {
             catalogData.setDevice(device);
             catalogData.setStatus(CatalogData.CatalogDataStatus.runIng);
             catalogData.getChannelList().addAll(deviceChannelList);
-            catalogData.setLastTime(Instant.now());
+            catalogData.setLastTime(new Date(System.currentTimeMillis()));
         }
     }
 
     public List<DeviceChannel> get(String deviceId) {
         CatalogData catalogData = data.get(deviceId);
-        if (catalogData == null) {
-            return null;
-        }
+        if (catalogData == null) return null;
         return catalogData.getChannelList();
     }
 
     public int getTotal(String deviceId) {
         CatalogData catalogData = data.get(deviceId);
-        if (catalogData == null) {
-            return 0;
-        }
+        if (catalogData == null) return 0;
         return catalogData.getTotal();
     }
 
     public SyncStatus getSyncStatus(String deviceId) {
         CatalogData catalogData = data.get(deviceId);
-        if (catalogData == null) {
-            return null;
-        }
+        if (catalogData == null) return null;
         SyncStatus syncStatus = new SyncStatus();
         syncStatus.setCurrent(catalogData.getChannelList().size());
         syncStatus.setTotal(catalogData.getTotal());
         syncStatus.setErrorMsg(catalogData.getErrorMsg());
-        if (catalogData.getStatus().equals(CatalogData.CatalogDataStatus.end)) {
-            syncStatus.setSyncIng(false);
-        }else {
-            syncStatus.setSyncIng(true);
-        }
         return syncStatus;
     }
 
     public boolean isSyncRunning(String deviceId) {
         CatalogData catalogData = data.get(deviceId);
-        if (catalogData == null) {
-            return false;
-        }
+        if (catalogData == null) return false;
         return !catalogData.getStatus().equals(CatalogData.CatalogDataStatus.end);
     }
 
     @Scheduled(fixedRate = 5 * 1000)   //每5秒执行一次, 发现数据5秒未更新则移除数据并认为数据接收超时
     private void timerTask(){
         Set<String> keys = data.keySet();
+        Calendar calendarBefore5S = Calendar.getInstance();
+        calendarBefore5S.setTime(new Date());
+        calendarBefore5S.set(Calendar.SECOND, calendarBefore5S.get(Calendar.SECOND) - 5);
 
-        Instant instantBefore5S = Instant.now().minusMillis(TimeUnit.SECONDS.toMillis(5));
-        Instant instantBefore30S = Instant.now().minusMillis(TimeUnit.SECONDS.toMillis(30));
-
+        Calendar calendarBefore30S = Calendar.getInstance();
+        calendarBefore30S.setTime(new Date());
+        calendarBefore30S.set(Calendar.SECOND, calendarBefore30S.get(Calendar.SECOND) - 30);
         for (String deviceId : keys) {
             CatalogData catalogData = data.get(deviceId);
-            if ( catalogData.getLastTime().isBefore(instantBefore5S)) {
-                // 超过五秒收不到消息任务超时， 只更新这一部分数据, 收到数据与声明的总数一致，则重置通道数据，数据不全则只对收到的数据做更新操作
+            if ( catalogData.getLastTime().before(calendarBefore5S.getTime())) { // 超过五秒收不到消息任务超时， 只更新这一部分数据
                 if (catalogData.getStatus().equals(CatalogData.CatalogDataStatus.runIng)) {
-                    if (catalogData.getTotal() == catalogData.getChannelList().size()) {
-                        storager.resetChannels(catalogData.getDevice().getDeviceId(), catalogData.getChannelList());
-                    }else {
-                        storager.updateChannels(catalogData.getDevice().getDeviceId(), catalogData.getChannelList());
-                    }
-                    String errorMsg = "更新成功，共" + catalogData.getTotal() + "条，已更新" + catalogData.getChannelList().size() + "条";
-                    catalogData.setErrorMsg(errorMsg);
+                    storager.resetChannels(catalogData.getDevice().getDeviceId(), catalogData.getChannelList());
                     if (catalogData.getTotal() != catalogData.getChannelList().size()) {
-
+                        String errorMsg = "更新成功，共" + catalogData.getTotal() + "条，已更新" + catalogData.getChannelList().size() + "条";
+                        catalogData.setErrorMsg(errorMsg);
                     }
                 }else if (catalogData.getStatus().equals(CatalogData.CatalogDataStatus.ready)) {
                     String errorMsg = "同步失败，等待回复超时";
@@ -128,7 +114,7 @@ public class CatalogDataCatch {
                 }
                 catalogData.setStatus(CatalogData.CatalogDataStatus.end);
             }
-            if (catalogData.getStatus().equals(CatalogData.CatalogDataStatus.end) && catalogData.getLastTime().isBefore(instantBefore30S)) { // 超过三十秒，如果标记为end则删除
+            if (catalogData.getStatus().equals(CatalogData.CatalogDataStatus.end) && catalogData.getLastTime().before(calendarBefore30S.getTime())) { // 超过三十秒，如果标记为end则删除
                 data.remove(deviceId);
             }
         }
@@ -137,9 +123,7 @@ public class CatalogDataCatch {
 
     public void setChannelSyncEnd(String deviceId, String errorMsg) {
         CatalogData catalogData = data.get(deviceId);
-        if (catalogData == null) {
-            return;
-        }
+        if (catalogData == null)return;
         catalogData.setStatus(CatalogData.CatalogDataStatus.end);
         catalogData.setErrorMsg(errorMsg);
     }

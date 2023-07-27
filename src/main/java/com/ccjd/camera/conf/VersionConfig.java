@@ -1,12 +1,10 @@
 package com.ccjd.camera.conf;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 @Component
 @ConfigurationProperties(prefix = "version")
-@Order(0)
 public class VersionConfig {
 
     private String version;

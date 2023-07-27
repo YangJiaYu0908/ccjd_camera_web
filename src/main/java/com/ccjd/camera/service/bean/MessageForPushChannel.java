@@ -2,7 +2,6 @@ package com.ccjd.camera.service.bean;
 
 /**
  * 当上级平台
- * @author lin
  */
 public class MessageForPushChannel {
     /**
@@ -27,14 +26,9 @@ public class MessageForPushChannel {
     private String gbId;
 
     /**
-     * 请求的平台国标编号
+     * 请求的平台ID
      */
     private String platFormId;
-
-    /**
-     * 请求的平台自增ID
-     */
-    private int platFormIndex;
 
     /**
      * 请求平台名称
@@ -50,22 +44,6 @@ public class MessageForPushChannel {
      * 目标流媒体节点ID
      */
     private String mediaServerId;
-
-
-
-    public static MessageForPushChannel getInstance(int type, String app, String stream, String gbId,
-                                                    String platFormId, String platFormName, String serverId,
-                                                    String mediaServerId){
-        MessageForPushChannel messageForPushChannel = new MessageForPushChannel();
-        messageForPushChannel.setType(type);
-        messageForPushChannel.setGbId(gbId);
-        messageForPushChannel.setApp(app);
-        messageForPushChannel.setStream(stream);
-        messageForPushChannel.setMediaServerId(mediaServerId);
-        messageForPushChannel.setPlatFormId(platFormId);
-        messageForPushChannel.setPlatFormName(platFormName);
-        return messageForPushChannel;
-    }
 
 
     public int getType() {
@@ -130,13 +108,5 @@ public class MessageForPushChannel {
 
     public void setMediaServerId(String mediaServerId) {
         this.mediaServerId = mediaServerId;
-    }
-
-    public int getPlatFormIndex() {
-        return platFormIndex;
-    }
-
-    public void setPlatFormIndex(int platFormIndex) {
-        this.platFormIndex = platFormIndex;
     }
 }

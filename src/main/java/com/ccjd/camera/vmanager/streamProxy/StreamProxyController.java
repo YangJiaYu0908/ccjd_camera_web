@@ -1,43 +1,40 @@
 package com.ccjd.camera.vmanager.streamProxy;
 
-import com.alibaba.fastjson2.JSONObject;
+import com.alibaba.fastjson.JSONObject;
 import com.ccjd.camera.common.StreamInfo;
-import com.ccjd.camera.conf.UserSetting;
-import com.ccjd.camera.conf.exception.ControllerException;
-import com.ccjd.camera.gb28181.transmit.callback.DeferredResultHolder;
-import com.ccjd.camera.gb28181.transmit.callback.RequestMessage;
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
 import com.ccjd.camera.media.zlm.dto.StreamProxyItem;
 import com.ccjd.camera.service.IMediaServerService;
 import com.ccjd.camera.service.IStreamProxyService;
-import com.ccjd.camera.vmanager.bean.ErrorCode;
-import com.ccjd.camera.vmanager.bean.StreamContent;
+import com.ccjd.camera.storager.IRedisCatchStorage;
 import com.ccjd.camera.vmanager.bean.WVPResult;
 import com.github.pagehelper.PageInfo;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiImplicitParam;
+import io.swagger.annotations.ApiImplicitParams;
+import io.swagger.annotations.ApiOperation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
-import org.springframework.util.ObjectUtils;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.context.request.async.DeferredResult;
-
-import java.util.UUID;
 
 @SuppressWarnings("rawtypes")
 /**
  * 拉流代理接口
  */
-@Tag(name = "拉流代理", description = "")
+@Api(tags = "拉流代理")
 @Controller
-
+@CrossOrigin
 @RequestMapping(value = "/api/proxy")
 public class StreamProxyController {
 
     private final static Logger logger = LoggerFactory.getLogger(StreamProxyController.class);
+
+    @Autowired
+    private IRedisCatchStorage redisCatchStorage;
+
 
     @Autowired
     private IMediaServerService mediaServerService;
@@ -45,18 +42,14 @@ public class StreamProxyController {
     @Autowired
     private IStreamProxyService streamProxyService;
 
-    @Autowired
-    private DeferredResultHolder resultHolder;
 
-    @Autowired
-    private UserSetting userSetting;
-
-
-    @Operation(summary = "分页查询流代理")
-    @Parameter(name = "page", description = "当前页")
-    @Parameter(name = "count", description = "每页查询数量")
-    @Parameter(name = "query", description = "查询内容")
-    @Parameter(name = "online", description = "是否在线")
+    @ApiOperation("分页查询流代理")
+    @ApiImplicitParams({
+            @ApiImplicitParam(name="page", value = "当前页", required = true, dataTypeClass = Integer.class),
+            @ApiImplicitParam(name="count", value = "每页查询数量", required = true, dataTypeClass = Integer.class),
+            @ApiImplicitParam(name="query", value = "查询内容", dataTypeClass = String.class),
+            @ApiImplicitParam(name="online", value = "是否在线", dataTypeClass = Boolean.class),
+    })
     @GetMapping(value = "/list")
     @ResponseBody
     public PageInfo<StreamProxyItem> list(@RequestParam(required = false)Integer page,
@@ -67,103 +60,83 @@ public class StreamProxyController {
         return streamProxyService.getAll(page, count);
     }
 
-    @Operation(summary = "保存代理", parameters = {
-            @Parameter(name = "param", description = "代理参数", required = true),
+    @ApiOperation("保存代理")
+    @ApiImplicitParams({
+            @ApiImplicitParam(name = "param", value = "代理参数", dataTypeClass = StreamProxyItem.class),
     })
     @PostMapping(value = "/save")
     @ResponseBody
-    public DeferredResult<Object> save(@RequestBody StreamProxyItem param){
+    public WVPResult save(@RequestBody StreamProxyItem param){
         logger.info("添加代理： " + JSONObject.toJSONString(param));
-        if (ObjectUtils.isEmpty(param.getMediaServerId())) {
-            param.setMediaServerId("auto");
-        }
-        if (ObjectUtils.isEmpty(param.getType())) {
-            param.setType("default");
-        }
-        if (ObjectUtils.isEmpty(param.getGbId())) {
-            param.setGbId(null);
-        }
-
-        RequestMessage requestMessage = new RequestMessage();
-        String key = DeferredResultHolder.CALLBACK_CMD_PROXY + param.getApp() + param.getStream();
-        requestMessage.setKey(key);
-        String uuid = UUID.randomUUID().toString();
-        requestMessage.setId(uuid);
-        DeferredResult<Object> result = new DeferredResult<>(userSetting.getPlayTimeout().longValue());
-        // 录像查询以channelId作为deviceId查询
-        resultHolder.put(key, uuid, result);
-        result.onTimeout(()->{
-            WVPResult<StreamInfo> wvpResult = new WVPResult<>();
-            wvpResult.setCode(ErrorCode.ERROR100.getCode());
-            wvpResult.setMsg("超时");
-            requestMessage.setData(wvpResult);
-            resultHolder.invokeAllResult(requestMessage);
-        });
-
-        streamProxyService.save(param, (code, msg, streamInfo) -> {
-            logger.info("[拉流代理] {}", code == ErrorCode.SUCCESS.getCode()? "成功":"失败： " + msg);
-            if (code == ErrorCode.SUCCESS.getCode()) {
-                requestMessage.setData(new StreamContent(streamInfo));
-            }else {
-                requestMessage.setData(WVPResult.fail(code, msg));
-            }
-            resultHolder.invokeAllResult(requestMessage);
-        });
+        if (StringUtils.isEmpty(param.getMediaServerId())) param.setMediaServerId("auto");
+        if (StringUtils.isEmpty(param.getType())) param.setType("default");
+        if (StringUtils.isEmpty(param.getGbId())) param.setGbId(null);
+        WVPResult<StreamInfo> result = streamProxyService.save(param);
         return result;
     }
 
+    @ApiOperation("获取ffmpeg.cmd模板")
     @GetMapping(value = "/ffmpeg_cmd/list")
+    @ApiImplicitParams({
+            @ApiImplicitParam(name = "mediaServerId", value = "流媒体ID", dataTypeClass = String.class),
+    })
     @ResponseBody
-    @Operation(summary = "获取ffmpeg.cmd模板")
-    @Parameter(name = "mediaServerId", description = "流媒体ID", required = true)
-    public JSONObject getFFmpegCMDs(@RequestParam String mediaServerId){
+    public WVPResult getFFmpegCMDs(@RequestParam String mediaServerId){
         logger.debug("获取节点[ {} ]ffmpeg.cmd模板", mediaServerId );
 
         MediaServerItem mediaServerItem = mediaServerService.getOne(mediaServerId);
-        if (mediaServerItem == null) {
-            throw new ControllerException(ErrorCode.ERROR100.getCode(), "流媒体： " + mediaServerId + "未找到");
-        }
-        return streamProxyService.getFFmpegCMDs(mediaServerItem);
+        JSONObject data = streamProxyService.getFFmpegCMDs(mediaServerItem);
+        WVPResult<JSONObject> result = new WVPResult<>();
+        result.setCode(0);
+        result.setMsg("success");
+        result.setData(data);
+        return result;
     }
 
+    @ApiOperation("移除代理")
+    @ApiImplicitParams({
+            @ApiImplicitParam(name = "app", value = "应用名", required = true, dataTypeClass = String.class),
+            @ApiImplicitParam(name = "stream", value = "流ID", required = true, dataTypeClass = String.class),
+    })
     @DeleteMapping(value = "/del")
     @ResponseBody
-    @Operation(summary = "移除代理")
-    @Parameter(name = "app", description = "应用名", required = true)
-    @Parameter(name = "stream", description = "流id", required = true)
-    public void del(@RequestParam String app, @RequestParam String stream){
+    public WVPResult del(@RequestParam String app, @RequestParam String stream){
         logger.info("移除代理： " + app + "/" + stream);
+        WVPResult<Object> result = new WVPResult<>();
         if (app == null || stream == null) {
-            throw new ControllerException(ErrorCode.ERROR400.getCode(), app == null ?"app不能为null":"stream不能为null");
+            result.setCode(400);
+            result.setMsg(app == null ?"app不能为null":"stream不能为null");
         }else {
             streamProxyService.del(app, stream);
+            result.setCode(0);
+            result.setMsg("success");
         }
+        return result;
     }
 
+    @ApiOperation("启用代理")
+    @ApiImplicitParams({
+            @ApiImplicitParam(name = "app", value = "应用名", dataTypeClass = String.class),
+            @ApiImplicitParam(name = "stream", value = "流ID", dataTypeClass = String.class),
+    })
     @GetMapping(value = "/start")
     @ResponseBody
-    @Operation(summary = "启用代理")
-    @Parameter(name = "app", description = "应用名", required = true)
-    @Parameter(name = "stream", description = "流id", required = true)
-    public void start(String app, String stream){
+    public Object start(String app, String stream){
         logger.info("启用代理： " + app + "/" + stream);
         boolean result = streamProxyService.start(app, stream);
-        if (!result) {
-            throw new ControllerException(ErrorCode.ERROR100);
-        }
+        return result?"success":"fail";
     }
 
+    @ApiOperation("停用代理")
+    @ApiImplicitParams({
+            @ApiImplicitParam(name = "app", value = "应用名", dataTypeClass = String.class),
+            @ApiImplicitParam(name = "stream", value = "流ID", dataTypeClass = String.class),
+    })
     @GetMapping(value = "/stop")
     @ResponseBody
-    @Operation(summary = "停用代理")
-    @Parameter(name = "app", description = "应用名", required = true)
-    @Parameter(name = "stream", description = "流id", required = true)
-    public void stop(String app, String stream){
+    public Object stop(String app, String stream){
         logger.info("停用代理： " + app + "/" + stream);
         boolean result = streamProxyService.stop(app, stream);
-        if (!result) {
-            logger.info("停用代理失败： " + app + "/" + stream);
-            throw new ControllerException(ErrorCode.ERROR100);
-        }
+        return result?"success":"fail";
     }
 }

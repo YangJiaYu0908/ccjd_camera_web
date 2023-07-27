@@ -1,6 +1,6 @@
 package com.ccjd.camera.gb28181.bean;
 
-import com.alibaba.fastjson2.JSONObject;
+import com.alibaba.fastjson.JSONObject;
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
 
 public class InviteStreamInfo {
