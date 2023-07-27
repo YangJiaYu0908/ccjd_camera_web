@@ -1,15 +1,13 @@
 package com.ccjd.camera.service.impl;
 
-import com.ccjd.camera.conf.SipConfig;
-import com.ccjd.camera.gb28181.bean.DeviceChannel;
-import com.ccjd.camera.gb28181.bean.GbStream;
-import com.ccjd.camera.gb28181.bean.ParentPlatform;
+import com.ccjd.camera.gb28181.bean.*;
 import com.ccjd.camera.gb28181.event.EventPublisher;
 import com.ccjd.camera.gb28181.event.subscribe.catalog.CatalogEvent;
-import com.ccjd.camera.media.zlm.dto.StreamProxyItem;
+import com.ccjd.camera.media.zlm.dto.StreamPushItem;
 import com.ccjd.camera.service.IGbStreamService;
 import com.ccjd.camera.storager.dao.GbStreamMapper;
 import com.ccjd.camera.storager.dao.ParentPlatformMapper;
+import com.ccjd.camera.storager.dao.PlatformCatalogMapper;
 import com.ccjd.camera.storager.dao.PlatformGbStreamMapper;
 import com.github.pagehelper.PageHelper;
 import com.github.pagehelper.PageInfo;
@@ -20,7 +18,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
-import org.springframework.util.StringUtils;
+import org.springframework.util.ObjectUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -43,18 +41,21 @@ public class GbStreamServiceImpl implements IGbStreamService {
     private PlatformGbStreamMapper platformGbStreamMapper;
 
     @Autowired
+    private SubscribeHolder subscribeHolder;
+
+    @Autowired
     private ParentPlatformMapper platformMapper;
 
     @Autowired
-    private SipConfig sipConfig;
+    private PlatformCatalogMapper catalogMapper;
 
     @Autowired
     private EventPublisher eventPublisher;
 
     @Override
-    public PageInfo<GbStream> getAll(Integer page, Integer count, String platFormId, String catalogId, String query, Boolean pushing, String mediaServerId) {
+    public PageInfo<GbStream> getAll(Integer page, Integer count, String platFormId, String catalogId, String query, String mediaServerId) {
         PageHelper.startPage(page, count);
-        List<GbStream> all = gbStreamMapper.selectAll(platFormId, catalogId, query, pushing, mediaServerId);
+        List<GbStream> all = gbStreamMapper.selectAll(platFormId, catalogId, query, mediaServerId);
         return new PageInfo<>(all);
     }
 
@@ -70,19 +71,28 @@ public class GbStreamServiceImpl implements IGbStreamService {
         boolean result = false;
         TransactionStatus transactionStatus = dataSourceTransactionManager.getTransaction(transactionDefinition);
         ParentPlatform parentPlatform = platformMapper.getParentPlatByServerGBId(platformId);
-        if (catalogId == null) catalogId = parentPlatform.getCatalogId();
+        if (catalogId == null) {
+            catalogId = parentPlatform.getCatalogId();
+        }
         try {
             List<DeviceChannel> deviceChannelList = new ArrayList<>();
-            for (GbStream gbStream : gbStreams) {
+
+
+            for (int i = 0; i < gbStreams.size(); i++) {
+                GbStream gbStream = gbStreams.get(i);
                 gbStream.setCatalogId(catalogId);
                 gbStream.setPlatformId(platformId);
                 // TODO 修改为批量提交
                 platformGbStreamMapper.add(gbStream);
-                DeviceChannel deviceChannelListByStream = getDeviceChannelListByStream(gbStream, catalogId, parentPlatform.getDeviceGBId());
+                logger.info("[关联通道]直播流通道 平台：{}, 共需关联通道数:{}, 已关联：{}", platformId, gbStreams.size(), i + 1);
+                DeviceChannel deviceChannelListByStream = getDeviceChannelListByStreamWithStatus(gbStream, catalogId, parentPlatform);
                 deviceChannelList.add(deviceChannelListByStream);
             }
             dataSourceTransactionManager.commit(transactionStatus);     //手动提交
-            eventPublisher.catalogEventPublish(platformId, deviceChannelList, CatalogEvent.ADD);
+            if (subscribeHolder.getCatalogSubscribe(platformId) != null) {
+                eventPublisher.catalogEventPublish(platformId, deviceChannelList, CatalogEvent.ADD);
+            }
+
             result = true;
         }catch (Exception e) {
             logger.error("批量保存流与平台的关系时错误", e);
@@ -92,19 +102,33 @@ public class GbStreamServiceImpl implements IGbStreamService {
     }
 
     @Override
-    public DeviceChannel getDeviceChannelListByStream(GbStream gbStream, String catalogId, String deviceGBId) {
+    public DeviceChannel getDeviceChannelListByStream(GbStream gbStream, String catalogId, ParentPlatform platform) {
         DeviceChannel deviceChannel = new DeviceChannel();
         deviceChannel.setChannelId(gbStream.getGbId());
         deviceChannel.setName(gbStream.getName());
         deviceChannel.setLongitude(gbStream.getLongitude());
         deviceChannel.setLatitude(gbStream.getLatitude());
-        deviceChannel.setDeviceId(deviceGBId);
+        deviceChannel.setDeviceId(platform.getDeviceGBId());
         deviceChannel.setManufacture("wvp-pro");
-//        deviceChannel.setStatus(gbStream.isStatus()?1:0);
-        deviceChannel.setStatus(1);
-        deviceChannel.setParentId(catalogId ==null?gbStream.getCatalogId():catalogId);
+        deviceChannel.setStatus(gbStream.isStatus());
+
         deviceChannel.setRegisterWay(1);
-        deviceChannel.setCivilCode(deviceGBId.substring(0, 6));
+        deviceChannel.setCivilCode(platform.getAdministrativeDivision());
+
+        if (platform.getTreeType().equals(TreeType.CIVIL_CODE)){
+            deviceChannel.setCivilCode(catalogId);
+        }else if (platform.getTreeType().equals(TreeType.BUSINESS_GROUP)){
+            PlatformCatalog catalog = catalogMapper.select(catalogId);
+            if (catalog == null) {
+                deviceChannel.setParentId(platform.getDeviceGBId());
+                deviceChannel.setBusinessGroupId(null);
+            }else {
+                deviceChannel.setParentId(catalog.getId());
+                deviceChannel.setBusinessGroupId(catalog.getBusinessGroupId());
+            }
+
+        }
+
         deviceChannel.setModel("live");
         deviceChannel.setOwner("wvp-pro");
         deviceChannel.setParental(0);
@@ -138,13 +162,17 @@ public class GbStreamServiceImpl implements IGbStreamService {
 
     @Override
     public void sendCatalogMsg(GbStream gbStream, String type) {
+        if (gbStream == null || type == null) {
+            logger.warn("[发送目录订阅]类型：流信息或类型为NULL");
+            return;
+        }
         List<GbStream> gbStreams = new ArrayList<>();
         if (gbStream.getGbId() != null) {
             gbStreams.add(gbStream);
         }else {
-            StreamProxyItem streamProxyItem = gbStreamMapper.selectOne(gbStream.getApp(), gbStream.getStream());
-            if (streamProxyItem != null && streamProxyItem.getGbId() != null){
-                gbStreams.add(streamProxyItem);
+            GbStream gbStreamIndb  = gbStreamMapper.selectOne(gbStream.getApp(), gbStream.getStream());
+            if (gbStreamIndb != null && gbStreamIndb.getGbId() != null){
+                gbStreams.add(gbStreamIndb);
             }
         }
         sendCatalogMsgs(gbStreams, type);
@@ -154,7 +182,7 @@ public class GbStreamServiceImpl implements IGbStreamService {
     public void sendCatalogMsgs(List<GbStream> gbStreams, String type) {
         if (gbStreams.size() > 0) {
             for (GbStream gs : gbStreams) {
-                if (StringUtils.isEmpty(gs.getGbId())){
+                if (ObjectUtils.isEmpty(gs.getGbId())){
                     continue;
                 }
                 List<ParentPlatform> parentPlatforms = platformGbStreamMapper.selectByAppAndStream(gs.getApp(), gs.getStream());
@@ -166,6 +194,84 @@ public class GbStreamServiceImpl implements IGbStreamService {
                     }
                 }
             }
+        }
+    }
+
+    @Override
+    public int updateGbIdOrName(List<StreamPushItem> streamPushItemForUpdate) {
+        return gbStreamMapper.updateGbIdOrName(streamPushItemForUpdate);
+    }
+
+    @Override
+    public DeviceChannel getDeviceChannelListByStreamWithStatus(GbStream gbStream, String catalogId, ParentPlatform platform) {
+        DeviceChannel deviceChannel = new DeviceChannel();
+        deviceChannel.setChannelId(gbStream.getGbId());
+        deviceChannel.setName(gbStream.getName());
+        deviceChannel.setLongitude(gbStream.getLongitude());
+        deviceChannel.setLatitude(gbStream.getLatitude());
+        deviceChannel.setDeviceId(platform.getDeviceGBId());
+        deviceChannel.setManufacture("wvp-pro");
+        // todo 目前是每一条查询一次，需要优化
+        Boolean status = null;
+        if ("proxy".equals(gbStream.getStreamType())) {
+            status = gbStreamMapper.selectStatusForProxy(gbStream.getApp(), gbStream.getStream());
+        }else {
+            status = gbStreamMapper.selectStatusForPush(gbStream.getApp(), gbStream.getStream());
+        }
+        deviceChannel.setStatus(status != null && status);
+
+        deviceChannel.setRegisterWay(1);
+        deviceChannel.setCivilCode(platform.getAdministrativeDivision());
+
+        if (platform.getTreeType().equals(TreeType.CIVIL_CODE)){
+            deviceChannel.setCivilCode(catalogId);
+        }else if (platform.getTreeType().equals(TreeType.BUSINESS_GROUP)){
+            PlatformCatalog catalog = catalogMapper.select(catalogId);
+            if (catalog == null) {
+                deviceChannel.setParentId(platform.getDeviceGBId());
+                deviceChannel.setBusinessGroupId(null);
+            }else {
+                deviceChannel.setParentId(catalog.getId());
+                deviceChannel.setBusinessGroupId(catalog.getBusinessGroupId());
+            }
+
+        }
+
+        deviceChannel.setModel("live");
+        deviceChannel.setOwner("wvp-pro");
+        deviceChannel.setParental(0);
+        deviceChannel.setSecrecy("0");
+        return deviceChannel;
+    }
+
+    @Override
+    public List<GbStream> getAllGBChannels(String platformId) {
+
+        return gbStreamMapper.selectAll(platformId, null, null, null);
+
+    }
+
+    @Override
+    public void delAllPlatformInfo(String platformId, String catalogId) {
+        if (platformId == null) {
+            return ;
+        }
+        ParentPlatform platform = platformMapper.getParentPlatByServerGBId(platformId);
+        if (platform == null) {
+            return ;
+        }
+        if (ObjectUtils.isEmpty(catalogId)) {
+            catalogId = platform.getDeviceGBId();
+        }
+        if (platformGbStreamMapper.delByPlatformAndCatalogId(platformId, catalogId) > 0) {
+            List<GbStream> gbStreams = platformGbStreamMapper.queryChannelInParentPlatformAndCatalog(platformId, catalogId);
+            List<DeviceChannel> deviceChannelList = new ArrayList<>();
+            for (GbStream gbStream : gbStreams) {
+                DeviceChannel deviceChannel = new DeviceChannel();
+                deviceChannel.setChannelId(gbStream.getGbId());
+                deviceChannelList.add(deviceChannel);
+            }
+            eventPublisher.catalogEventPublish(platformId, deviceChannelList, CatalogEvent.DEL);
         }
     }
 }

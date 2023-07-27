@@ -2,8 +2,8 @@ package com.ccjd.camera.conf;
 
 import com.ccjd.camera.gb28181.bean.ParentPlatform;
 import com.ccjd.camera.gb28181.bean.ParentPlatformCatch;
-import com.ccjd.camera.gb28181.event.EventPublisher;
 import com.ccjd.camera.gb28181.transmit.cmd.ISIPCommanderForPlatform;
+import com.ccjd.camera.service.IPlatformService;
 import com.ccjd.camera.storager.IRedisCatchStorage;
 import com.ccjd.camera.storager.IVideoManagerStorage;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,9 +15,10 @@ import java.util.List;
 
 /**
  * 系统启动时控制上级平台重新注册
+ * @author lin
  */
 @Component
-@Order(value=3)
+@Order(value=13)
 public class SipPlatformRunner implements CommandLineRunner {
 
     @Autowired
@@ -27,7 +28,7 @@ public class SipPlatformRunner implements CommandLineRunner {
     private IRedisCatchStorage redisCatchStorage;
 
     @Autowired
-    private EventPublisher publisher;
+    private IPlatformService platformService;
 
     @Autowired
     private ISIPCommanderForPlatform sipCommanderForPlatform;
@@ -35,33 +36,27 @@ public class SipPlatformRunner implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        // 设置所有平台离线
-        storager.outlineForAllParentPlatform();
-
-        // 清理所有平台注册缓存
-        redisCatchStorage.cleanPlatformRegisterInfos();
-
-        // 停止所有推流
-//        zlmrtpServerFactory.closeAllSendRtpStream();
-
+        // 获取所有启用的平台
         List<ParentPlatform> parentPlatforms = storager.queryEnableParentPlatformList(true);
 
         for (ParentPlatform parentPlatform : parentPlatforms) {
-            redisCatchStorage.updatePlatformRegister(parentPlatform);
 
-            redisCatchStorage.updatePlatformKeepalive(parentPlatform);
+            ParentPlatformCatch parentPlatformCatchOld = redisCatchStorage.queryPlatformCatchInfo(parentPlatform.getServerGBId());
 
+            // 更新缓存
             ParentPlatformCatch parentPlatformCatch = new ParentPlatformCatch();
-
             parentPlatformCatch.setParentPlatform(parentPlatform);
             parentPlatformCatch.setId(parentPlatform.getServerGBId());
             redisCatchStorage.updatePlatformCatchInfo(parentPlatformCatch);
+            if (parentPlatformCatchOld != null) {
+                // 取消订阅
+                sipCommanderForPlatform.unregister(parentPlatform, parentPlatformCatchOld.getSipTransactionInfo(), null, (eventResult)->{
+                    platformService.login(parentPlatform);
+                });
+            }
 
-            // 取消订阅
-            sipCommanderForPlatform.unregister(parentPlatform, null, (eventResult)->{
-                // 发送平台未注册消息
-                publisher.platformNotRegisterEventPublish(parentPlatform.getServerGBId());
-            });
+            // 设置所有平台离线
+            platformService.offline(parentPlatform, true);
         }
     }
 }

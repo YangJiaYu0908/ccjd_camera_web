@@ -1,13 +1,19 @@
 package com.ccjd.camera.gb28181.bean;
 
-import java.util.Date;
+import java.time.Instant;
 import java.util.List;
 
+/**
+ * @author lin
+ */
 public class CatalogData {
-    private int sn; // 命令序列号
+    /**
+     * 命令序列号
+     */
+    private int sn;
     private int total;
     private List<DeviceChannel> channelList;
-    private Date lastTime;
+    private Instant lastTime;
     private Device device;
     private String errorMsg;
 
@@ -41,11 +47,11 @@ public class CatalogData {
         this.channelList = channelList;
     }
 
-    public Date getLastTime() {
+    public Instant getLastTime() {
         return lastTime;
     }
 
-    public void setLastTime(Date lastTime) {
+    public void setLastTime(Instant lastTime) {
         this.lastTime = lastTime;
     }
 

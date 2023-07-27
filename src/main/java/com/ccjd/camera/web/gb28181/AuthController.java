@@ -3,11 +3,10 @@ package com.ccjd.camera.web.gb28181;
 import com.ccjd.camera.service.IUserService;
 import com.ccjd.camera.storager.dao.dto.User;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@CrossOrigin
+
 @RestController
 @RequestMapping(value = "/auth")
 public class AuthController {

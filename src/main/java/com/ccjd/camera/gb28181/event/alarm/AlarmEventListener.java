@@ -30,8 +30,6 @@ public class AlarmEventListener implements ApplicationListener<AlarmEvent> {
 
     @Override
     public void onApplicationEvent(AlarmEvent event) {
-        final SseEmitter sseEmitter = new SseEmitter(0L);
-        addSseEmitters("12345677",sseEmitter);
         if (logger.isDebugEnabled()) {
             logger.debug("设备报警事件触发，deviceId：" + event.getAlarmInfo().getDeviceId() + ", "
                     + event.getAlarmInfo().getAlarmDescription());
@@ -53,7 +51,6 @@ public class AlarmEventListener implements ApplicationListener<AlarmEvent> {
                 }
                 // 移除已关闭的连接
                 it.remove();
-                // e.printStackTrace();
             }
         }
     }

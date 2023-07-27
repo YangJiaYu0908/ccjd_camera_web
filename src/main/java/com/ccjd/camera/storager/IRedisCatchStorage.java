@@ -1,13 +1,17 @@
 package com.ccjd.camera.storager;
 
-import com.alibaba.fastjson.JSONObject;
-import com.ccjd.camera.common.StreamInfo;
-import com.ccjd.camera.gb28181.bean.*;
-import com.ccjd.camera.media.zlm.dto.MediaItem;
+import com.alibaba.fastjson2.JSONObject;
+import com.ccjd.camera.common.SystemAllInfo;
+import com.ccjd.camera.gb28181.bean.AlarmChannelMessage;
+import com.ccjd.camera.gb28181.bean.Device;
+import com.ccjd.camera.gb28181.bean.ParentPlatformCatch;
+import com.ccjd.camera.gb28181.bean.SendRtpItem;
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
+import com.ccjd.camera.media.zlm.dto.StreamAuthorityInfo;
+import com.ccjd.camera.media.zlm.dto.hook.OnStreamChangedHookParam;
 import com.ccjd.camera.service.bean.GPSMsgInfo;
 import com.ccjd.camera.service.bean.MessageForPushChannel;
-import com.ccjd.camera.service.bean.ThirdPartyGB;
+import com.ccjd.camera.storager.dao.dto.PlatformRegisterInfo;
 
 import java.util.List;
 import java.util.Map;
@@ -17,44 +21,9 @@ public interface IRedisCatchStorage {
     /**
      * 计数器。为cseq进行计数
      *
-     * @param method sip 方法
      * @return
      */
-    Long getCSEQ(String method);
-
-    /**
-     * 开始播放时将流存入
-     *
-     * @param stream 流信息
-     * @return
-     */
-    boolean startPlay(StreamInfo stream);
-
-
-    /**
-     * 停止播放时删除
-     *
-     * @return
-     */
-    boolean stopPlay(StreamInfo streamInfo);
-
-    /**
-     * 查询播放列表
-     * @return
-     */
-    StreamInfo queryPlay(StreamInfo streamInfo);
-
-    StreamInfo queryPlayByStreamId(String steamId);
-
-    StreamInfo queryPlayByDevice(String deviceId, String channelId);
-
-    Map<String, StreamInfo> queryPlayByDeviceId(String deviceId);
-
-    boolean startPlayback(StreamInfo stream, String callId);
-
-    boolean stopPlayback(String deviceId, String channelId, String stream, String callId);
-
-    StreamInfo queryPlayback(String deviceId, String channelID, String stream, String callId);
+    Long getCSEQ();
 
     void updatePlatformCatchInfo(ParentPlatformCatch parentPlatformCatch);
 
@@ -62,21 +31,15 @@ public interface IRedisCatchStorage {
 
     void delPlatformCatchInfo(String platformGbId);
 
-    void updatePlatformKeepalive(ParentPlatform parentPlatform);
-
     void delPlatformKeepalive(String platformGbId);
-
-    void updatePlatformRegister(ParentPlatform parentPlatform);
 
     void delPlatformRegister(String platformGbId);
 
-    void updatePlatformRegisterInfo(String callId, String platformGbId);
+    void updatePlatformRegisterInfo(String callId, PlatformRegisterInfo platformRegisterInfo);
 
-    String queryPlatformRegisterInfo(String callId);
+    PlatformRegisterInfo queryPlatformRegisterInfo(String callId);
 
     void delPlatformRegisterInfo(String callId);
-
-    void cleanPlatformRegisterInfos();
 
     void updateSendRTPSever(SendRtpItem sendRtpItem);
 
@@ -104,29 +67,6 @@ public interface IRedisCatchStorage {
     boolean isChannelSendingRTP(String channelId);
 
     /**
-     * 清空某个设备的所有缓存
-     * @param deviceId 设备ID
-     */
-    void clearCatchByDeviceId(String deviceId);
-
-    /**
-     * 获取mediaServer节点
-     * @param mediaServerId
-     * @return
-     */
-//    MediaServerItem getMediaInfo(String mediaServerId);
-
-    /**
-     * 设置所有设备离线
-     */
-    void outlineForAll();
-
-    /**
-     * 获取所有在线的
-     */
-    List<String> getOnlineForAll();
-
-    /**
      * 在redis添加wvp的信息
      */
     void updateWVPInfo(JSONObject jsonObject, int time);
@@ -149,7 +89,7 @@ public interface IRedisCatchStorage {
      * @param app
      * @param streamId
      */
-    void addStream(MediaServerItem mediaServerItem, String type, String app, String streamId, MediaItem item);
+    void addStream(MediaServerItem mediaServerItem, String type, String app, String streamId, OnStreamChangedHookParam item);
 
     /**
      * 移除流信息从redis
@@ -166,24 +106,7 @@ public interface IRedisCatchStorage {
      */
     void removeStream(String mediaServerId, String type);
 
-    /**
-     * 开始下载录像时存入
-     * @param streamInfo
-     */
-    boolean startDownload(StreamInfo streamInfo, String callId);
-
-    StreamInfo queryDownload(String deviceId, String channelId, String stream, String callId);
-
-    boolean stopDownload(String deviceId, String channelId, String stream, String callId);
-
-    /**
-     * 查找第三方系统留下的国标预设值
-     * @param queryKey
-     * @return
-     */
-    ThirdPartyGB queryMemberNoGBId(String queryKey);
-
-    List<MediaItem> getStreams(String mediaServerId, String pull);
+    List<OnStreamChangedHookParam> getStreams(String mediaServerId, String pull);
 
     /**
      * 将device信息写入redis
@@ -209,16 +132,74 @@ public interface IRedisCatchStorage {
 
     void resetAllSN();
 
-    MediaItem getStreamInfo(String app, String streamId, String mediaServerId);
+    OnStreamChangedHookParam getStreamInfo(String app, String streamId, String mediaServerId);
 
     void addCpuInfo(double cpuInfo);
 
     void addMemInfo(double memInfo);
 
-    void addNetInfo(Map<String, String> networkInterfaces);
+    void addNetInfo(Map<String, Double> networkInterfaces);
 
     void sendMobilePositionMsg(JSONObject jsonObject);
 
     void sendStreamPushRequestedMsg(MessageForPushChannel messageForPushChannel);
 
+    /**
+     * 判断设备状态
+     * @param deviceId 设备ID
+     * @return
+     */
+    public boolean deviceIsOnline(String deviceId);
+
+    /**
+     * 存储推流的鉴权信息
+     * @param app 应用名
+     * @param stream 流
+     * @param streamAuthorityInfo 鉴权信息
+     */
+    void updateStreamAuthorityInfo(String app, String stream, StreamAuthorityInfo streamAuthorityInfo);
+
+    /**
+     * 移除推流的鉴权信息
+     * @param app 应用名
+     * @param streamId 流
+     */
+    void removeStreamAuthorityInfo(String app, String streamId);
+
+    /**
+     * 获取推流的鉴权信息
+     * @param app 应用名
+     * @param stream 流
+     * @return
+     */
+    StreamAuthorityInfo getStreamAuthorityInfo(String app, String stream);
+
+    List<StreamAuthorityInfo> getAllStreamAuthorityInfo();
+
+    /**
+     * 发送redis消息 查询所有推流设备的状态
+     */
+    void sendStreamPushRequestedMsgForStatus();
+
+    List<SendRtpItem> querySendRTPServerByChnnelId(String channelId);
+
+    List<SendRtpItem> querySendRTPServerByStream(String stream);
+
+    SystemAllInfo getSystemInfo();
+
+    int getPushStreamCount(String id);
+
+    int getProxyStreamCount(String id);
+
+    int getGbSendCount(String id);
+
+    void addDiskInfo(List<Map<String, Object>> diskInfo);
+
+    List<SendRtpItem> queryAllSendRTPServer();
+
+    List<Device> getAllDevices();
+
+    void removeAllDevice();
+
+    void sendDeviceOrChannelStatus(String deviceId, String channelId, boolean online);
 }

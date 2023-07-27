@@ -5,14 +5,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationListener;
 import org.springframework.stereotype.Component;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.util.HashMap;
-import java.util.Hashtable;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * @description: 录像查询结束时间
+ * @description: 录像查询结束事件
  * @author: pan
  * @data: 2022-02-23
  */
@@ -22,26 +20,46 @@ public class RecordEndEventListener implements ApplicationListener<RecordEndEven
 
     private final static Logger logger = LoggerFactory.getLogger(RecordEndEventListener.class);
 
-    private static Map<String, SseEmitter> sseEmitters = new Hashtable<>();
-
+    private Map<String, RecordEndEventHandler> handlerMap = new ConcurrentHashMap<>();
     public interface RecordEndEventHandler{
         void  handler(RecordInfo recordInfo);
     }
 
-    private Map<String, RecordEndEventHandler> handlerMap = new HashMap<>();
     @Override
     public void onApplicationEvent(RecordEndEvent event) {
-        logger.info("录像查询完成事件触发，deviceId：{}, channelId: {}, 录像数量{}条", event.getRecordInfo().getDeviceId(),
-                event.getRecordInfo().getChannelId(), event.getRecordInfo().getSumNum() );
+        String deviceId = event.getRecordInfo().getDeviceId();
+        String channelId = event.getRecordInfo().getChannelId();
+        int count = event.getRecordInfo().getCount();
+        int sumNum = event.getRecordInfo().getSumNum();
+        logger.info("录像查询完成事件触发，deviceId：{}, channelId: {}, 录像数量{}/{}条", event.getRecordInfo().getDeviceId(),
+                event.getRecordInfo().getChannelId(), count,sumNum);
         if (handlerMap.size() > 0) {
-            for (RecordEndEventHandler recordEndEventHandler : handlerMap.values()) {
-                recordEndEventHandler.handler(event.getRecordInfo());
+            RecordEndEventHandler handler = handlerMap.get(deviceId + channelId);
+            if (handler !=null){
+                handler.handler(event.getRecordInfo());
+                if (count ==sumNum){
+                    handlerMap.remove(deviceId + channelId);
+                }
             }
         }
-
     }
 
+    /**
+     * 添加
+     * @param device
+     * @param channelId
+     * @param recordEndEventHandler
+     */
     public void addEndEventHandler(String device, String channelId, RecordEndEventHandler recordEndEventHandler) {
         handlerMap.put(device + channelId, recordEndEventHandler);
     }
+    /**
+     * 添加
+     * @param device
+     * @param channelId
+     */
+    public void delEndEventHandler(String device, String channelId) {
+        handlerMap.remove(device + channelId);
+    }
+
 }

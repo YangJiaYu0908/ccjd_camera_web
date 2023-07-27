@@ -1,46 +1,52 @@
 package com.ccjd.camera.gb28181.transmit.event.request.impl.message.notify.cmd;
 
 import com.ccjd.camera.common.VideoManagerConstants;
+import com.ccjd.camera.conf.DynamicTask;
+import com.ccjd.camera.conf.UserSetting;
 import com.ccjd.camera.gb28181.bean.Device;
 import com.ccjd.camera.gb28181.bean.ParentPlatform;
-import com.ccjd.camera.gb28181.event.EventPublisher;
+import com.ccjd.camera.gb28181.bean.RemoteAddressInfo;
 import com.ccjd.camera.gb28181.transmit.event.request.SIPRequestProcessorParent;
 import com.ccjd.camera.gb28181.transmit.event.request.impl.message.IMessageHandler;
 import com.ccjd.camera.gb28181.transmit.event.request.impl.message.notify.NotifyMessageHandler;
-import com.ccjd.camera.storager.IRedisCatchStorage;
-import com.ccjd.camera.storager.IVideoManagerStorage;
+import com.ccjd.camera.gb28181.utils.SipUtils;
+import com.ccjd.camera.service.IDeviceService;
+import com.ccjd.camera.utils.DateUtil;
+import gov.nist.javax.sip.message.SIPRequest;
 import org.dom4j.Element;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 
 import javax.sip.InvalidArgumentException;
 import javax.sip.RequestEvent;
 import javax.sip.SipException;
-import javax.sip.header.ViaHeader;
 import javax.sip.message.Response;
 import java.text.ParseException;
 
+/**
+ * 状态信息(心跳)报送
+ */
 @Component
 public class KeepaliveNotifyMessageHandler extends SIPRequestProcessorParent implements InitializingBean, IMessageHandler {
 
+
     private Logger logger = LoggerFactory.getLogger(KeepaliveNotifyMessageHandler.class);
-    private final String cmdType = "Keepalive";
+    private final static String cmdType = "Keepalive";
 
     @Autowired
     private NotifyMessageHandler notifyMessageHandler;
 
     @Autowired
-    private EventPublisher publisher;
+    private IDeviceService deviceService;
 
     @Autowired
-    private IVideoManagerStorage videoManagerStorager;
+    private UserSetting userSetting;
 
     @Autowired
-    private IRedisCatchStorage redisCatchStorage;
+    private DynamicTask dynamicTask;
 
     @Override
     public void afterPropertiesSet() throws Exception {
@@ -49,36 +55,48 @@ public class KeepaliveNotifyMessageHandler extends SIPRequestProcessorParent imp
 
     @Override
     public void handForDevice(RequestEvent evt, Device device, Element element) {
-        // 检查设备是否存在并在线， 不在线则设置为在线
-        try {
-            if (device != null ) {
-                // 回复200 OK
-                responseAck(evt, Response.OK);
-                // 判断RPort是否改变，改变则说明路由nat信息变化，修改设备信息
-                // 获取到通信地址等信息
-                ViaHeader viaHeader = (ViaHeader) evt.getRequest().getHeader(ViaHeader.NAME);
-                String received = viaHeader.getReceived();
-                int rPort = viaHeader.getRPort();
-                // 解析本地地址替代
-                if (StringUtils.isEmpty(received) || rPort == -1) {
-                    received = viaHeader.getHost();
-                    rPort = viaHeader.getPort();
-                }
-                if (device.getPort() != rPort) {
-                    device.setPort(rPort);
-                    device.setHostAddress(received.concat(":").concat(String.valueOf(rPort)));
-                    videoManagerStorager.updateDevice(device);
-                    redisCatchStorage.updateDevice(device);
-                }
-                publisher.onlineEventPublish(device, VideoManagerConstants.EVENT_ONLINE_KEEPLIVE);
-            }
-        } catch (SipException e) {
-            e.printStackTrace();
-        } catch (InvalidArgumentException e) {
-            e.printStackTrace();
-        } catch (ParseException e) {
-            e.printStackTrace();
+        if (device == null) {
+            // 未注册的设备不做处理
+            return;
         }
+        SIPRequest request = (SIPRequest) evt.getRequest();
+        // 回复200 OK
+        try {
+            responseAck(request, Response.OK);
+        } catch (SipException | InvalidArgumentException | ParseException e) {
+            logger.error("[命令发送失败] 心跳回复: {}", e.getMessage());
+        }
+
+        RemoteAddressInfo remoteAddressInfo = SipUtils.getRemoteAddressFromRequest(request, userSetting.getSipUseSourceIpAsRemoteAddress());
+        if (!device.getIp().equalsIgnoreCase(remoteAddressInfo.getIp()) || device.getPort() != remoteAddressInfo.getPort()) {
+            logger.info("[心跳] 设备{}地址变化, 远程地址为: {}:{}", device.getDeviceId(), remoteAddressInfo.getIp(), remoteAddressInfo.getPort());
+            device.setPort(remoteAddressInfo.getPort());
+            device.setHostAddress(remoteAddressInfo.getIp().concat(":").concat(String.valueOf(remoteAddressInfo.getPort())));
+            device.setIp(remoteAddressInfo.getIp());
+        }
+        if (device.getKeepaliveTime() == null) {
+            device.setKeepaliveIntervalTime(60);
+        }else {
+            long lastTime = DateUtil.yyyy_MM_dd_HH_mm_ssToTimestamp(device.getKeepaliveTime());
+            device.setKeepaliveIntervalTime(new Long(System.currentTimeMillis()/1000-lastTime).intValue());
+        }
+
+        device.setKeepaliveTime(DateUtil.getNow());
+
+        if (device.isOnLine()) {
+            deviceService.updateDevice(device);
+        }else {
+            // 对于已经离线的设备判断他的注册是否已经过期
+            if (!deviceService.expire(device)){
+                device.setOnLine(false);
+                deviceService.online(device, null);
+            }
+        }
+        // 刷新过期任务
+        String registerExpireTaskKey = VideoManagerConstants.REGISTER_EXPIRE_TASK_KEY_PREFIX + device.getDeviceId();
+        // 如果三次心跳失败，则设置设备离线
+        dynamicTask.startDelay(registerExpireTaskKey, ()-> deviceService.offline(device.getDeviceId(), "三次心跳失败"), device.getKeepaliveIntervalTime()*1000*3);
+
     }
 
     @Override

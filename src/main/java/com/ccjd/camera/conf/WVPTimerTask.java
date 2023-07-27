@@ -1,6 +1,6 @@
 package com.ccjd.camera.conf;
 
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONObject;
 import com.ccjd.camera.service.IMediaServerService;
 import com.ccjd.camera.storager.IRedisCatchStorage;
 import org.springframework.beans.factory.annotation.Autowired;

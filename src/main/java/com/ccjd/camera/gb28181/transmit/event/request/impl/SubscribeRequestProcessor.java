@@ -1,75 +1,54 @@
 package com.ccjd.camera.gb28181.transmit.event.request.impl;
 
-import com.ccjd.camera.conf.DynamicTask;
-import com.ccjd.camera.conf.UserSetting;
 import com.ccjd.camera.gb28181.bean.CmdType;
 import com.ccjd.camera.gb28181.bean.ParentPlatform;
 import com.ccjd.camera.gb28181.bean.SubscribeHolder;
 import com.ccjd.camera.gb28181.bean.SubscribeInfo;
 import com.ccjd.camera.gb28181.transmit.SIPProcessorObserver;
-import com.ccjd.camera.gb28181.transmit.cmd.ISIPCommanderForPlatform;
+import com.ccjd.camera.gb28181.transmit.SIPSender;
 import com.ccjd.camera.gb28181.transmit.event.request.ISIPRequestProcessor;
 import com.ccjd.camera.gb28181.transmit.event.request.SIPRequestProcessorParent;
 import com.ccjd.camera.gb28181.utils.SipUtils;
 import com.ccjd.camera.gb28181.utils.XmlUtil;
-import com.ccjd.camera.storager.IRedisCatchStorage;
 import com.ccjd.camera.storager.IVideoManagerStorage;
-import gov.nist.javax.sip.SipProviderImpl;
+import gov.nist.javax.sip.message.SIPRequest;
+import gov.nist.javax.sip.message.SIPResponse;
 import org.dom4j.DocumentException;
 import org.dom4j.Element;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
-import javax.sip.*;
+import javax.sip.InvalidArgumentException;
+import javax.sip.RequestEvent;
+import javax.sip.SipException;
 import javax.sip.header.ExpiresHeader;
-import javax.sip.message.Request;
 import javax.sip.message.Response;
 import java.text.ParseException;
 
 /**
  * SIP命令类型： SUBSCRIBE请求
+ * @author lin
  */
 @Component
 public class SubscribeRequestProcessor extends SIPRequestProcessorParent implements InitializingBean, ISIPRequestProcessor {
 
-	private Logger logger = LoggerFactory.getLogger(SubscribeRequestProcessor.class);
-	private String method = "SUBSCRIBE";
+	private final Logger logger = LoggerFactory.getLogger(SubscribeRequestProcessor.class);
+	private final String method = "SUBSCRIBE";
 
 	@Autowired
 	private SIPProcessorObserver sipProcessorObserver;
 
 	@Autowired
-	private IRedisCatchStorage redisCatchStorage;
-
-	@Autowired
-	private ISIPCommanderForPlatform sipCommanderForPlatform;
-
-	@Autowired
 	private IVideoManagerStorage storager;
-
-	@Lazy
-	@Autowired
-	@Qualifier(value="tcpSipProvider")
-	private SipProviderImpl tcpSipProvider;
-
-	@Lazy
-	@Autowired
-	@Qualifier(value="udpSipProvider")
-	private SipProviderImpl udpSipProvider;
-
-	@Autowired
-	private DynamicTask dynamicTask;
-
-	@Autowired
-	private UserSetting userSetting;
 
 	@Autowired
 	private SubscribeHolder subscribeHolder;
+
+	@Autowired
+	private SIPSender sipSender;
 
 	@Override
 	public void afterPropertiesSet() throws Exception {
@@ -80,49 +59,38 @@ public class SubscribeRequestProcessor extends SIPRequestProcessorParent impleme
 	/**   
 	 * 处理SUBSCRIBE请求  
 	 * 
-	 * @param evt
+	 * @param evt 事件
 	 */
 	@Override
 	public void process(RequestEvent evt) {
-		Request request = evt.getRequest();
-
+		SIPRequest request = (SIPRequest) evt.getRequest();
 		try {
 			Element rootElement = getRootElement(evt);
+			if (rootElement == null) {
+				logger.error("处理SUBSCRIBE请求  未获取到消息体{}", evt.getRequest());
+				return;
+			}
 			String cmd = XmlUtil.getText(rootElement, "CmdType");
 			if (CmdType.MOBILE_POSITION.equals(cmd)) {
-				processNotifyMobilePosition(evt, rootElement);
+				processNotifyMobilePosition(request, rootElement);
 //			} else if (CmdType.ALARM.equals(cmd)) {
 //				logger.info("接收到Alarm订阅");
-//				processNotifyAlarm(evt, rootElement);
+//				processNotifyAlarm(serverTransaction, rootElement);
 			} else if (CmdType.CATALOG.equals(cmd)) {
-				processNotifyCatalogList(evt, rootElement);
+				processNotifyCatalogList(request, rootElement);
 			} else {
 				logger.info("接收到消息：" + cmd);
 
-				Response response = null;
-				response = getMessageFactory().createResponse(200, request);
+				Response response = getMessageFactory().createResponse(200, request);
 				if (response != null) {
 					ExpiresHeader expireHeader = getHeaderFactory().createExpiresHeader(30);
 					response.setExpires(expireHeader);
 				}
-				logger.info("response : " + response.toString());
-				ServerTransaction transaction = getServerTransaction(evt);
-				if (transaction != null) {
-					transaction.sendResponse(response);
-					transaction.getDialog().delete();
-					transaction.terminate();
-				} else {
-					logger.info("processRequest serverTransactionId is null.");
-				}
+				logger.info("response : " + response);
+				sipSender.transmitRequest(request.getLocalAddress().getHostAddress(), response);
 			}
-		} catch (ParseException e) {
-			e.printStackTrace();
-		} catch (SipException e) {
-			e.printStackTrace();
-		} catch (InvalidArgumentException e) {
-			e.printStackTrace();
-		} catch (DocumentException e) {
-			e.printStackTrace();
+		} catch (ParseException | SipException | InvalidArgumentException | DocumentException e) {
+			logger.error("未处理的异常 ", e);
 		}
 
 	}
@@ -130,65 +98,52 @@ public class SubscribeRequestProcessor extends SIPRequestProcessorParent impleme
 	/**
 	 * 处理移动位置订阅消息
 	 */
-	private void processNotifyMobilePosition(RequestEvent evt, Element rootElement) throws SipException {
-		String platformId = SipUtils.getUserIdFromFromHeader(evt.getRequest());
-		String deviceID = XmlUtil.getText(rootElement, "DeviceID");
+	private void processNotifyMobilePosition(SIPRequest request, Element rootElement) throws SipException {
+		if (request == null) {
+			return;
+		}
+		String platformId = SipUtils.getUserIdFromFromHeader(request);
+		String deviceId = XmlUtil.getText(rootElement, "DeviceID");
 		ParentPlatform platform = storager.queryParentPlatByServerGBId(platformId);
-		SubscribeInfo subscribeInfo = new SubscribeInfo(evt, platformId);
+		SubscribeInfo subscribeInfo = new SubscribeInfo(request, platformId);
 		if (platform == null) {
 			return;
 		}
-		if (evt.getServerTransaction() == null) {
-			ServerTransaction serverTransaction = platform.getTransport().equals("TCP") ? tcpSipProvider.getNewServerTransaction(evt.getRequest())
-					: udpSipProvider.getNewServerTransaction(evt.getRequest());
-			subscribeInfo.setTransaction(serverTransaction);
-			Dialog dialog = serverTransaction.getDialog();
-			dialog.terminateOnBye(false);
-			subscribeInfo.setDialog(dialog);
-		}
+
 		String sn = XmlUtil.getText(rootElement, "SN");
-		logger.info("[回复 移动位置订阅]: {}", platformId);
+		logger.info("[回复上级的移动位置订阅请求]: {}", platformId);
 		StringBuilder resultXml = new StringBuilder(200);
 		resultXml.append("<?xml version=\"1.0\" ?>\r\n")
 				.append("<Response>\r\n")
 				.append("<CmdType>MobilePosition</CmdType>\r\n")
-				.append("<SN>" + sn + "</SN>\r\n")
-				.append("<DeviceID>" + deviceID + "</DeviceID>\r\n")
+				.append("<SN>").append(sn).append("</SN>\r\n")
+				.append("<DeviceID>").append(deviceId).append("</DeviceID>\r\n")
 				.append("<Result>OK</Result>\r\n")
 				.append("</Response>\r\n");
 
 		if (subscribeInfo.getExpires() > 0) {
-			String interval = XmlUtil.getText(rootElement, "Interval"); // GPS上报时间间隔
+			// GPS上报时间间隔
+			String interval = XmlUtil.getText(rootElement, "Interval");
 			if (interval == null) {
 				subscribeInfo.setGpsInterval(5);
 			}else {
 				subscribeInfo.setGpsInterval(Integer.parseInt(interval));
 			}
-
 			subscribeInfo.setSn(sn);
-			subscribeHolder.putMobilePositionSubscribe(platformId, subscribeInfo);
-//			if (subscribeHolder.getMobilePositionSubscribe(platformId) == null ) {
-//				subscribeHolder.putMobilePositionSubscribe(platformId, subscribeInfo);
-//			}else {
-//				if (subscribeHolder.getMobilePositionSubscribe(platformId).getDialog() != null
-//						&& subscribeHolder.getMobilePositionSubscribe(platformId).getDialog().getState() != null
-//						&& !subscribeHolder.getMobilePositionSubscribe(platformId).getDialog().getState().equals(DialogState.CONFIRMED)) {
-//					subscribeHolder.putMobilePositionSubscribe(platformId, subscribeInfo);
-//				}
-//			}
-		}else if (subscribeInfo.getExpires() == 0) {
-			subscribeHolder.removeMobilePositionSubscribe(platformId);
 		}
 
 		try {
 			ParentPlatform parentPlatform = storager.queryParentPlatByServerGBId(platformId);
-			responseXmlAck(evt, resultXml.toString(), parentPlatform);
-		} catch (SipException e) {
-			e.printStackTrace();
-		} catch (InvalidArgumentException e) {
-			e.printStackTrace();
-		} catch (ParseException e) {
-			e.printStackTrace();
+			SIPResponse response = responseXmlAck(request, resultXml.toString(), parentPlatform, subscribeInfo.getExpires());
+			if (subscribeInfo.getExpires() == 0) {
+				subscribeHolder.removeMobilePositionSubscribe(platformId);
+			}else {
+				subscribeInfo.setResponse(response);
+				subscribeHolder.putMobilePositionSubscribe(platformId, subscribeInfo);
+			}
+
+		} catch (SipException | InvalidArgumentException | ParseException e) {
+			logger.error("未处理的异常 ", e);
 		}
 	}
 
@@ -196,27 +151,26 @@ public class SubscribeRequestProcessor extends SIPRequestProcessorParent impleme
 
 	}
 
-	private void processNotifyCatalogList(RequestEvent evt, Element rootElement) throws SipException {
-		String platformId = SipUtils.getUserIdFromFromHeader(evt.getRequest());
-		String deviceID = XmlUtil.getText(rootElement, "DeviceID");
-		ParentPlatform platform = storager.queryParentPlatByServerGBId(platformId);
-		SubscribeInfo subscribeInfo = new SubscribeInfo(evt, platformId);
-		if (evt.getServerTransaction() == null) {
-			ServerTransaction serverTransaction = platform.getTransport().equals("TCP") ? tcpSipProvider.getNewServerTransaction(evt.getRequest())
-					: udpSipProvider.getNewServerTransaction(evt.getRequest());
-			subscribeInfo.setTransaction(serverTransaction);
-			Dialog dialog = serverTransaction.getDialog();
-			dialog.terminateOnBye(false);
-			subscribeInfo.setDialog(dialog);
+	private void processNotifyCatalogList(SIPRequest request, Element rootElement) throws SipException {
+		if (request == null) {
+			return;
 		}
+		String platformId = SipUtils.getUserIdFromFromHeader(request);
+		String deviceId = XmlUtil.getText(rootElement, "DeviceID");
+		ParentPlatform platform = storager.queryParentPlatByServerGBId(platformId);
+		if (platform == null){
+			return;
+		}
+		SubscribeInfo subscribeInfo = new SubscribeInfo(request, platformId);
+
 		String sn = XmlUtil.getText(rootElement, "SN");
-		logger.info("[回复 目录订阅]: {}/{}", platformId, deviceID);
+		logger.info("[回复上级的目录订阅请求]: {}/{}", platformId, deviceId);
 		StringBuilder resultXml = new StringBuilder(200);
 		resultXml.append("<?xml version=\"1.0\" ?>\r\n")
 				.append("<Response>\r\n")
 				.append("<CmdType>Catalog</CmdType>\r\n")
-				.append("<SN>" + sn + "</SN>\r\n")
-				.append("<DeviceID>" + deviceID + "</DeviceID>\r\n")
+				.append("<SN>").append(sn).append("</SN>\r\n")
+				.append("<DeviceID>").append(deviceId).append("</DeviceID>\r\n")
 				.append("<Result>OK</Result>\r\n")
 				.append("</Response>\r\n");
 
@@ -225,17 +179,17 @@ public class SubscribeRequestProcessor extends SIPRequestProcessorParent impleme
 		}else if (subscribeInfo.getExpires() == 0) {
 			subscribeHolder.removeCatalogSubscribe(platformId);
 		}
-
 		try {
 			ParentPlatform parentPlatform = storager.queryParentPlatByServerGBId(platformId);
-			responseXmlAck(evt, resultXml.toString(), parentPlatform);
-		} catch (SipException e) {
-			e.printStackTrace();
-		} catch (InvalidArgumentException e) {
-			e.printStackTrace();
-		} catch (ParseException e) {
-			e.printStackTrace();
+			SIPResponse response = responseXmlAck(request, resultXml.toString(), parentPlatform, subscribeInfo.getExpires());
+			if (subscribeInfo.getExpires() == 0) {
+				subscribeHolder.removeCatalogSubscribe(platformId);
+			}else {
+				subscribeInfo.setResponse(response);
+				subscribeHolder.putCatalogSubscribe(platformId, subscribeInfo);
+			}
+		} catch (SipException | InvalidArgumentException | ParseException e) {
+			logger.error("未处理的异常 ", e);
 		}
 	}
-
 }

@@ -1,10 +1,10 @@
 package com.ccjd.camera.service;
 
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSONObject;
 import com.ccjd.camera.common.StreamInfo;
 import com.ccjd.camera.media.zlm.dto.MediaServerItem;
 import com.ccjd.camera.media.zlm.dto.StreamProxyItem;
-import com.ccjd.camera.vmanager.bean.WVPResult;
+import com.ccjd.camera.vmanager.bean.ResourceBaseInfo;
 import com.github.pagehelper.PageInfo;
 
 public interface IStreamProxyService {
@@ -13,7 +13,7 @@ public interface IStreamProxyService {
      * 保存视频代理
      * @param param
      */
-    WVPResult<StreamInfo> save(StreamProxyItem param);
+    StreamInfo save(StreamProxyItem param);
 
     /**
      * 添加视频代理到zlm
@@ -98,4 +98,16 @@ public interface IStreamProxyService {
     void zlmServerOffline(String mediaServerId);
 
     void clean();
+
+    /**
+     * 更新代理流
+     */
+    boolean updateStreamProxy(StreamProxyItem streamProxyItem);
+
+    /**
+     * 获取统计信息
+     * @return
+     */
+    ResourceBaseInfo getOverview();
+
 }

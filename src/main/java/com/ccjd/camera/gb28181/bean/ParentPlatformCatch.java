@@ -4,7 +4,9 @@ public class ParentPlatformCatch {
 
     private String id;
 
-    // 心跳未回复次数
+    /**
+     * 心跳未回复次数
+     */
     private int keepAliveReply;
 
     // 注册未回复次数
@@ -13,6 +15,8 @@ public class ParentPlatformCatch {
     private String callId;
 
     private ParentPlatform parentPlatform;
+
+    private SipTransactionInfo sipTransactionInfo;
 
     public String getId() {
         return id;
@@ -52,5 +56,13 @@ public class ParentPlatformCatch {
 
     public void setCallId(String callId) {
         this.callId = callId;
+    }
+
+    public SipTransactionInfo getSipTransactionInfo() {
+        return sipTransactionInfo;
+    }
+
+    public void setSipTransactionInfo(SipTransactionInfo sipTransactionInfo) {
+        this.sipTransactionInfo = sipTransactionInfo;
     }
 }

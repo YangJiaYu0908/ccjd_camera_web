@@ -1,39 +1,44 @@
 package com.ccjd.camera.conf.security;
 
-import com.alibaba.fastjson.JSONObject;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.alibaba.fastjson2.JSONObject;
+import com.ccjd.camera.conf.security.dto.JwtUser;
+import com.ccjd.camera.vmanager.bean.ErrorCode;
+import org.springframework.http.MediaType;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 处理匿名用户访问逻辑
+ * @author lin
  */
 @Component
-public class AnonymousAuthenticationEntryPoint implements AuthenticationEntryPoint {
-
-    private final static Logger logger = LoggerFactory.getLogger(DefaultUserDetailsServiceImpl.class);
+public class    AnonymousAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException e) {
-//        logger.debug("用户需要登录，访问[{}]失败，AuthenticationException=[{}]", request.getRequestURI(), e.getMessage());
-        // 允许跨域
-        response.setHeader("Access-Control-Allow-Origin", "*");
-        // 允许自定义请求头token(允许head跨域)
-        response.setHeader("Access-Control-Allow-Headers", "token, Accept, Origin, X-Requested-With, Content-Type, Last-Modified");
-        response.setHeader("Content-type", "application/json;charset=UTF-8");
+        String jwt = request.getHeader(JwtUtils.getHeader());
+        JwtUser jwtUser = JwtUtils.verifyToken(jwt);
+        String username = jwtUser.getUserName();
+        UsernamePasswordAuthenticationToken token = new UsernamePasswordAuthenticationToken(username, jwtUser.getPassword() );
+        SecurityContextHolder.getContext().setAuthentication(token);
         JSONObject jsonObject = new JSONObject();
-        jsonObject.put("code", "-1");
-        jsonObject.put("msg", "请登录后重新请求");
-        if (request.getRequestURI().contains("api/user/login")){
+        jsonObject.put("code", ErrorCode.ERROR401.getCode());
+        jsonObject.put("msg", ErrorCode.ERROR401.getMsg());
+        String logUri = "api/user/login";
+        if (request.getRequestURI().contains(logUri)){
             jsonObject.put("msg", e.getMessage());
         }
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         try {
             response.getWriter().print(jsonObject.toJSONString());
         } catch (IOException ioException) {

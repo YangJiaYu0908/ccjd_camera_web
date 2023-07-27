@@ -11,7 +11,6 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
-import java.text.SimpleDateFormat;
 
 /**
  * @description: 在线事件监听器，监听到离线后，修改设备离在线状态。 设备在线有两个来源：
@@ -37,23 +36,20 @@ public class ZLMStatusEventListener {
 	@Autowired
 	private IPlayService playService;
 
-	private SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-
-	@Async
+	@Async("taskExecutor")
 	@EventListener
 	public void onApplicationEvent(ZLMOnlineEvent event) {
-
-		logger.info("ZLM上线事件触发，ID：" + event.getMediaServerId());
+		logger.info("[ZLM] 上线 ID：" + event.getMediaServerId());
 		streamPushService.zlmServerOnline(event.getMediaServerId());
 		streamProxyService.zlmServerOnline(event.getMediaServerId());
-
+		playService.zlmServerOnline(event.getMediaServerId());
 	}
 
-	@Async
+	@Async("taskExecutor")
 	@EventListener
 	public void onApplicationEvent(ZLMOfflineEvent event) {
 
-		logger.info("ZLM离线事件触发，ID：" + event.getMediaServerId());
+		logger.info("[ZLM] 离线，ID：" + event.getMediaServerId());
 		// 处理ZLM离线
 		mediaServerService.zlmServerOffline(event.getMediaServerId());
 		streamProxyService.zlmServerOffline(event.getMediaServerId());

@@ -1,15 +1,17 @@
 package com.ccjd.camera.gb28181.transmit.event.request.impl.message.response.cmd;
 
+import com.alibaba.fastjson2.JSONObject;
 import com.ccjd.camera.conf.UserSetting;
-import com.ccjd.camera.gb28181.bean.Device;
-import com.ccjd.camera.gb28181.bean.MobilePosition;
-import com.ccjd.camera.gb28181.bean.ParentPlatform;
+import com.ccjd.camera.gb28181.bean.*;
 import com.ccjd.camera.gb28181.transmit.event.request.SIPRequestProcessorParent;
 import com.ccjd.camera.gb28181.transmit.event.request.impl.message.IMessageHandler;
 import com.ccjd.camera.gb28181.transmit.event.request.impl.message.response.ResponseMessageHandler;
-import com.ccjd.camera.gb28181.utils.Coordtransform;
 import com.ccjd.camera.gb28181.utils.NumericUtil;
+import com.ccjd.camera.service.IDeviceChannelService;
+import com.ccjd.camera.storager.IRedisCatchStorage;
 import com.ccjd.camera.storager.IVideoManagerStorage;
+import com.ccjd.camera.utils.DateUtil;
+import gov.nist.javax.sip.message.SIPRequest;
 import org.dom4j.DocumentException;
 import org.dom4j.Element;
 import org.slf4j.Logger;
@@ -17,7 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
+import org.springframework.util.ObjectUtils;
 
 import javax.sip.InvalidArgumentException;
 import javax.sip.RequestEvent;
@@ -27,6 +29,10 @@ import java.text.ParseException;
 
 import static com.ccjd.camera.gb28181.utils.XmlUtil.getText;
 
+/**
+ * 移动设备位置数据查询回复
+ * @author lin
+ */
 @Component
 public class MobilePositionResponseMessageHandler extends SIPRequestProcessorParent implements InitializingBean, IMessageHandler {
 
@@ -42,6 +48,12 @@ public class MobilePositionResponseMessageHandler extends SIPRequestProcessorPar
     @Autowired
     private IVideoManagerStorage storager;
 
+    @Autowired
+    private IRedisCatchStorage redisCatchStorage;
+
+    @Autowired
+    private IDeviceChannelService deviceChannelService;
+
     @Override
     public void afterPropertiesSet() throws Exception {
         responseMessageHandler.addHandler(cmdType, this);
@@ -49,12 +61,22 @@ public class MobilePositionResponseMessageHandler extends SIPRequestProcessorPar
 
     @Override
     public void handForDevice(RequestEvent evt, Device device, Element rootElement) {
+        SIPRequest request = (SIPRequest) evt.getRequest();
 
         try {
             rootElement = getRootElement(evt, device.getCharset());
-
+            if (rootElement == null) {
+                logger.warn("[ 移动设备位置数据查询回复 ] content cannot be null, {}", evt.getRequest());
+                try {
+                    responseAck(request, Response.BAD_REQUEST);
+                } catch (SipException | InvalidArgumentException | ParseException e) {
+                    logger.error("[命令发送失败] 移动设备位置数据查询 BAD_REQUEST: {}", e.getMessage());
+                }
+                return;
+            }
             MobilePosition mobilePosition = new MobilePosition();
-            if (!StringUtils.isEmpty(device.getName())) {
+            mobilePosition.setCreateTime(DateUtil.getNow());
+            if (!ObjectUtils.isEmpty(device.getName())) {
                 mobilePosition.setDeviceName(device.getName());
             }
             mobilePosition.setDeviceId(device.getDeviceId());
@@ -78,20 +100,47 @@ public class MobilePositionResponseMessageHandler extends SIPRequestProcessorPar
                 mobilePosition.setAltitude(0.0);
             }
             mobilePosition.setReportSource("Mobile Position");
-            // 默认来源坐标系为WGS-84处理
-            Double[] gcj02Point = Coordtransform.WGS84ToGCJ02(mobilePosition.getLongitude(), mobilePosition.getLatitude());
-            logger.info("GCJ02坐标：" + gcj02Point[0] + ", " + gcj02Point[1]);
-            mobilePosition.setGeodeticSystem("GCJ-02");
-            mobilePosition.setCnLng(gcj02Point[0] + "");
-            mobilePosition.setCnLat(gcj02Point[1] + "");
-            if (!userSetting.getSavePositionHistory()) {
-                storager.clearMobilePositionsByDeviceId(device.getDeviceId());
+
+            // 更新device channel 的经纬度
+            DeviceChannel deviceChannel = new DeviceChannel();
+            deviceChannel.setDeviceId(device.getDeviceId());
+            deviceChannel.setChannelId(mobilePosition.getChannelId());
+            deviceChannel.setLongitude(mobilePosition.getLongitude());
+            deviceChannel.setLatitude(mobilePosition.getLatitude());
+            deviceChannel.setGpsTime(mobilePosition.getTime());
+
+            deviceChannel = deviceChannelService.updateGps(deviceChannel, device);
+
+            mobilePosition.setLongitudeWgs84(deviceChannel.getLongitudeWgs84());
+            mobilePosition.setLatitudeWgs84(deviceChannel.getLatitudeWgs84());
+            mobilePosition.setLongitudeGcj02(deviceChannel.getLongitudeGcj02());
+            mobilePosition.setLatitudeGcj02(deviceChannel.getLatitudeGcj02());
+
+            if (userSetting.getSavePositionHistory()) {
+                storager.insertMobilePosition(mobilePosition);
             }
-            storager.insertMobilePosition(mobilePosition);
+            storager.updateChannelPosition(deviceChannel);
+
+            // 发送redis消息。 通知位置信息的变化
+            JSONObject jsonObject = new JSONObject();
+            jsonObject.put("time", mobilePosition.getTime());
+            jsonObject.put("serial", deviceChannel.getDeviceId());
+            jsonObject.put("code", deviceChannel.getChannelId());
+            jsonObject.put("longitude", mobilePosition.getLongitude());
+            jsonObject.put("latitude", mobilePosition.getLatitude());
+            jsonObject.put("altitude", mobilePosition.getAltitude());
+            jsonObject.put("direction", mobilePosition.getDirection());
+            jsonObject.put("speed", mobilePosition.getSpeed());
+            redisCatchStorage.sendMobilePositionMsg(jsonObject);
             //回复 200 OK
-            responseAck(evt, Response.OK);
-        } catch (DocumentException | SipException | InvalidArgumentException | ParseException e) {
-            e.printStackTrace();
+            try {
+                responseAck(request, Response.OK);
+            } catch (SipException | InvalidArgumentException | ParseException e) {
+                logger.error("[命令发送失败] 移动设备位置数据查询 200: {}", e.getMessage());
+            }
+
+        } catch (DocumentException e) {
+            logger.error("未处理的异常 ", e);
         }
     }
 
