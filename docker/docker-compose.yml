@@ -1,0 +1,39 @@
+version: "3"
+
+services:
+  # redis数据库
+  redis-ccjd:
+    image: library/redis:latest
+    restart: always
+    ports:
+    - 6379:6379
+
+  # mysql数据库
+  mysql-ccjd:
+    image: library/mysql:8.0.30
+    restart: :always
+    command: [
+      '--character-set-server=utf8mb4',
+      '--collation-server=utf8mb4_unicode_ci'
+    ]
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: wvp
+    ports:
+    - 3306:3306
+
+  # zml服务
+  zml-ccjd:
+    image: zlmediakit_ubuntu:v1.0.1
+    restart: always
+    ports:
+     - 80:80
+     - 1935:1935
+     - 554:554
+     - 10000:10000
+     - 10000:10000/udp
+     - 8000:8000/udp
+     - 30000-30500:30000-30500
+     - 30000-30500:30000-30500/udp
+    command: /opt/media/MediaServer -d
+
